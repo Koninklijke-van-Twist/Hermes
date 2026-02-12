@@ -209,6 +209,17 @@ $salesQuotes = odata_fetch_safe(
     $errors
 );
 
+$salesQuoteLines = odata_fetch_safe(
+    $environment,
+    $selectedCompany,
+    'SalesQuoteSalesLines',
+    [
+        '$select' => 'Document_No,No,LVS_Line_No,Line_Amount,Unit_Price,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+    ],
+    $auth,
+    $errors
+);
+
 $salesOrderLines = odata_fetch_safe(
     $environment,
     $selectedCompany,
@@ -359,6 +370,18 @@ $quoteStats = [
     'jaar' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
 ];
 
+$quoteLineAmountByNo = [];
+foreach ($salesQuoteLines as $quoteLine) {
+    $quoteNo = first_non_empty($quoteLine, ['Document_No', 'No', 'Quote_No']);
+    if ($quoteNo === '') {
+        continue;
+    }
+
+    $lineAmountRaw = first_non_empty($quoteLine, ['Line_Amount', 'Unit_Price']);
+    $lineAmount = as_float($lineAmountRaw);
+    $quoteLineAmountByNo[$quoteNo] = ($quoteLineAmountByNo[$quoteNo] ?? 0.0) + $lineAmount;
+}
+
 foreach ($salesQuotes as $quote) {
     if (!matches_code_filter($quote, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $partsFilter)) {
         continue;
@@ -369,12 +392,16 @@ foreach ($salesQuotes as $quote) {
         continue;
     }
 
+    $quoteNo = trim((string) ($quote['No'] ?? ''));
     $orderRef = first_non_empty($quote, ['KVT_Sales_Order_No', 'Sales_Order_No', 'Sales_Order_No_']);
     $status = normalize((string) ($quote['Status'] ?? ''));
-    $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED'], true);
+    $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED', 'RELEASED'], true);
 
     $amountRaw = first_non_empty($quote, ['Amount', 'Amount_Including_VAT', 'Total_Amount']);
     $amount = as_float($amountRaw);
+    if ($amount == 0.0 && $quoteNo !== '' && isset($quoteLineAmountByNo[$quoteNo])) {
+        $amount = (float) $quoteLineAmountByNo[$quoteNo];
+    }
 
     foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $period => $start) {
         if (!in_period($date, $start, $today)) {
@@ -836,8 +863,6 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
                 </table>
             </div>
         </div>
-
-        <p class="small">De dropdowns worden automatisch gevuld met afdelingscodes en vendors uit BC-data.
         </p>
     </div>
 </body>
