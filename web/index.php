@@ -451,7 +451,7 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Perkins Omzet Dashboard</title>
+    <title>Hermes - Omzet Dashboard</title>
     <style>
         :root {
             color-scheme: light;
@@ -775,7 +775,7 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
 
         <div class="grid" style="margin-top:14px;">
             <div class="card">
-                <h3>Inbound bij Perkins (aantal)</h3>
+                <h3>Inbound (aantal)</h3>
                 <?php foreach ($periods as $k => $label): ?>
                     <div class="metric">
                         <span><?= html($label) ?></span><strong><?= html(fmt_number((float) $inboundPerkins[$k], 2)) ?></strong>
@@ -783,7 +783,7 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
                 <?php endforeach; ?>
             </div>
             <div class="table-wrap" style="grid-column: span 2; margin:0;">
-                <div class="table-title">Laatste inbound regels Perkins</div>
+                <div class="table-title">Laatste inbound regels</div>
                 <table>
                     <thead>
                         <tr>
