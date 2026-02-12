@@ -42,6 +42,22 @@ function as_float($value): float
     return (float) $value;
 }
 
+function first_non_empty(array $row, array $keys): string
+{
+    foreach ($keys as $key) {
+        if (!array_key_exists($key, $row)) {
+            continue;
+        }
+
+        $value = trim((string) $row[$key]);
+        if ($value !== '') {
+            return $value;
+        }
+    }
+
+    return '';
+}
+
 function parse_bc_date($value): ?DateTimeImmutable
 {
     if (!is_string($value) || $value === '') {
@@ -259,6 +275,11 @@ foreach ($salesOrderLines as $row) {
 
 ksort($departmentOptions, SORT_NATURAL);
 
+if ($partsFilter !== '' && !isset($departmentOptions[$partsFilter])) {
+    $departmentOptions[$partsFilter] = $partsFilter;
+    ksort($departmentOptions, SORT_NATURAL);
+}
+
 $vendorOptions = [];
 foreach ($purchaseHdrVendor as $row) {
     $vendorNo = trim((string) ($row['Vendor_No'] ?? ''));
@@ -271,7 +292,8 @@ foreach ($purchaseHdrVendor as $row) {
 ksort($vendorOptions, SORT_NATURAL);
 
 if ($vendorFilter !== '' && !isset($vendorOptions[$vendorFilter])) {
-    $vendorFilter = '';
+    $vendorOptions[$vendorFilter] = '';
+    ksort($vendorOptions, SORT_NATURAL);
 }
 
 $omzetParts = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
@@ -347,8 +369,12 @@ foreach ($salesQuotes as $quote) {
         continue;
     }
 
-    $isWon = trim((string) ($quote['KVT_Sales_Order_No'] ?? '')) !== '';
-    $amount = as_float($quote['Amount'] ?? 0);
+    $orderRef = first_non_empty($quote, ['KVT_Sales_Order_No', 'Sales_Order_No', 'Sales_Order_No_']);
+    $status = normalize((string) ($quote['Status'] ?? ''));
+    $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED'], true);
+
+    $amountRaw = first_non_empty($quote, ['Amount', 'Amount_Including_VAT', 'Total_Amount']);
+    $amount = as_float($amountRaw);
 
     foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $period => $start) {
         if (!in_period($date, $start, $today)) {
@@ -654,7 +680,7 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
                     <option value="">Alle vendors</option>
                     <?php foreach ($vendorOptions as $vendorNo => $vendorName): ?>
                         <?php $label = $vendorNo . ($vendorName !== '' ? ' - ' . $vendorName : ''); ?>
-                        <option value="<?= html($vendorNo) ?>" <?= $vendorNo === $vendorFilter ? 'selected' : '' ?>>
+                        <option value="<?= html((string) $vendorNo) ?>" <?= (string) $vendorNo === $vendorFilter ? 'selected' : '' ?>>
                             <?= html($label) ?>
                         </option>
                     <?php endforeach; ?>
