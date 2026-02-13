@@ -375,6 +375,13 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             stroke-linejoin: round;
         }
 
+        .fallback-indicator {
+            border-bottom: 2px solid #f59e0b;
+            cursor: help;
+            display: inline-block;
+            line-height: 1.1;
+        }
+
         .loading-box {
             min-height: 120px;
             display: grid;
