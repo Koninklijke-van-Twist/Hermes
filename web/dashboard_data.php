@@ -26,7 +26,7 @@ if (!in_array($selectedCompany, $companies, true)) {
     $selectedCompany = $companies[0];
 }
 
-$partsFilter = normalize((string) ($_GET['parts_filter'] ?? $_GET['department_filter'] ?? '15'));
+$departmentFilter = normalize((string) ($_GET['department_filter'] ?? $_GET['parts_filter'] ?? '15'));
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 $section = trim((string) ($_GET['section'] ?? ''));
 $period = trim((string) ($_GET['period'] ?? ''));
@@ -465,8 +465,8 @@ if ($section === 'filter_options') {
     }
 
     ksort($departmentOptions, SORT_NATURAL);
-    if ($partsFilter !== '' && !isset($departmentOptions[$partsFilter])) {
-        $departmentOptions[$partsFilter] = $partsFilter;
+    if ($departmentFilter !== '' && !isset($departmentOptions[$departmentFilter])) {
+        $departmentOptions[$departmentFilter] = $departmentFilter;
         ksort($departmentOptions, SORT_NATURAL);
     }
 
@@ -474,7 +474,7 @@ if ($section === 'filter_options') {
     foreach ($departmentOptions as $departmentCode) {
         $departmentOptionsPayload[] = [
             'value' => (string) $departmentCode,
-            'selected' => normalize((string) $departmentCode) === $partsFilter,
+            'selected' => normalize((string) $departmentCode) === $departmentFilter,
         ];
     }
 
@@ -526,7 +526,7 @@ if ($section === 'card_omzet_parts') {
 
     $totals = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
     foreach ($valueEntries as $row) {
-        if (!matches_code_filter($row, ['AuxiliaryIndex1'], $partsFilter)) {
+        if (!matches_code_filter($row, ['AuxiliaryIndex1'], $departmentFilter)) {
             continue;
         }
 
@@ -543,7 +543,7 @@ if ($section === 'card_omzet_parts') {
     <h3>Omzet Parts</h3>
     <?php foreach ($periods as $k => $label): ?>
         <div class="metric">
-            <span><?= html($label) ?></span><strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
+            <span><?= html($label) ?></span>: <strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
         </div>
     <?php endforeach; ?>
     <?php
@@ -557,7 +557,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
         $selectedCompany,
         'SalesOrderSalesLines',
         [
-            '$select' => 'LVS_Order_Intake_Date,Line_Amount,Shipment_Date,Gen_Prod_Posting_Group,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+            '$select' => 'LVS_Order_Intake_Date,Line_Amount,Shipment_Date,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
             '$filter' => "LVS_Order_Intake_Date ge $fromDate",
         ],
         $auth,
@@ -567,7 +567,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     if ($section === 'card_order_intake') {
         $totals = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
         foreach ($salesOrderLines as $line) {
-            if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code', 'Gen_Prod_Posting_Group'], $partsFilter)) {
+            if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
                 continue;
             }
 
@@ -584,7 +584,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
         <h3>Order intake</h3>
         <?php foreach ($periods as $k => $label): ?>
             <div class="metric">
-                <span><?= html($label) ?></span><strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
+                <span><?= html($label) ?></span>: <strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
             </div>
         <?php endforeach; ?>
         <?php
@@ -598,7 +598,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     ];
 
     foreach ($salesOrderLines as $line) {
-        if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code', 'Gen_Prod_Posting_Group'], $partsFilter)) {
+        if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
             continue;
         }
 
@@ -633,7 +633,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     <h3>Gemiddelde levertijd (dagen)</h3>
     <?php foreach ($periods as $k => $label): ?>
         <div class="metric">
-            <span><?= html($label) ?></span><strong><?= html(fmt_number($leadTimeAvg[$k] ?? 0, 1)) ?></strong>
+            <span><?= html($label) ?></span>: <strong><?= html(fmt_number($leadTimeAvg[$k] ?? 0, 1)) ?></strong>
         </div>
     <?php endforeach; ?>
     <?php
@@ -648,7 +648,7 @@ if ($section === 'table_quote_score') {
         $selectedCompany,
         'SalesQuotes',
         [
-            '$select' => 'No,Posting_Date,Amount,Status,KVT_Sales_Order_No,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+            '$select' => 'No,External_Document_No,Posting_Date,Amount,Status,KVT_Sales_Order_No,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
             '$filter' => "Posting_Date ge $fromDate",
         ],
         $auth,
@@ -660,7 +660,7 @@ if ($section === 'table_quote_score') {
         $selectedCompany,
         'SalesQuoteSalesLines',
         [
-            '$select' => 'Document_No,No,Line_Amount,Unit_Price',
+            '$select' => 'Document_No,No,Line_Amount,Unit_Price,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
         ],
         $auth,
         $errors
@@ -673,36 +673,74 @@ if ($section === 'table_quote_score') {
     ];
 
     $quoteLineAmountByNo = [];
+    $quoteLineMatchesPartsByNo = [];
     foreach ($salesQuoteLines as $quoteLine) {
-        $quoteNo = first_non_empty($quoteLine, ['Document_No', 'No', 'Quote_No']);
-        if ($quoteNo === '') {
+        $documentNo = first_non_empty($quoteLine, ['Document_No', 'Quote_No']);
+        if ($documentNo === '') {
             continue;
         }
 
         $lineAmountRaw = first_non_empty($quoteLine, ['Line_Amount', 'Unit_Price']);
-        $lineAmount = as_float($lineAmountRaw);
-        $quoteLineAmountByNo[$quoteNo] = ($quoteLineAmountByNo[$quoteNo] ?? 0.0) + $lineAmount;
+        $lineAmountParsed = parse_numeric_value($lineAmountRaw);
+        $lineAmount = $lineAmountParsed !== null ? $lineAmountParsed : as_float($lineAmountRaw);
+        if ($lineAmount == 0.0) {
+            $lineAmount = 0.0;
+        }
+
+        $lineKey = normalize($documentNo);
+        $quoteLineAmountByNo[$lineKey] = ($quoteLineAmountByNo[$lineKey] ?? 0.0) + $lineAmount;
+
+        if (!isset($quoteLineMatchesPartsByNo[$lineKey])) {
+            $quoteLineMatchesPartsByNo[$lineKey] = false;
+        }
+        if (matches_code_filter($quoteLine, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+            $quoteLineMatchesPartsByNo[$lineKey] = true;
+        }
     }
 
     foreach ($salesQuotes as $quote) {
-        if (!matches_code_filter($quote, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $partsFilter)) {
-            continue;
-        }
-
         $date = parse_bc_date($quote['Posting_Date'] ?? null);
         if (!$date) {
             continue;
         }
 
         $quoteNo = trim((string) ($quote['No'] ?? ''));
+        $externalDocNo = trim((string) ($quote['External_Document_No'] ?? ''));
         $orderRef = first_non_empty($quote, ['KVT_Sales_Order_No', 'Sales_Order_No', 'Sales_Order_No_']);
         $status = normalize((string) ($quote['Status'] ?? ''));
         $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED', 'RELEASED'], true);
 
         $amountRaw = first_non_empty($quote, ['Amount', 'Amount_Including_VAT', 'Total_Amount']);
-        $amount = as_float($amountRaw);
-        if ($amount == 0.0 && $quoteNo !== '' && isset($quoteLineAmountByNo[$quoteNo])) {
-            $amount = (float) $quoteLineAmountByNo[$quoteNo];
+        $amountParsed = parse_numeric_value($amountRaw);
+        $amount = $amountParsed !== null ? $amountParsed : as_float($amountRaw);
+
+        $lookupKeys = [];
+        if ($quoteNo !== '') {
+            $lookupKeys[] = normalize($quoteNo);
+        }
+        if ($externalDocNo !== '') {
+            $lookupKeys[] = normalize($externalDocNo);
+        }
+
+        if ($amount == 0.0) {
+            foreach ($lookupKeys as $lookupKey) {
+                if (isset($quoteLineAmountByNo[$lookupKey])) {
+                    $amount = (float) $quoteLineAmountByNo[$lookupKey];
+                    break;
+                }
+            }
+        }
+
+        $headerMatchesParts = matches_code_filter($quote, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter);
+        $lineMatchesParts = false;
+        foreach (array_unique($lookupKeys) as $lookupKey) {
+            if (!empty($quoteLineMatchesPartsByNo[$lookupKey])) {
+                $lineMatchesParts = true;
+                break;
+            }
+        }
+        if (!$headerMatchesParts && !$lineMatchesParts) {
+            continue;
         }
 
         foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $p => $start) {
@@ -765,7 +803,7 @@ if ($section === 'table_omzet_productgroep') {
     $currentYearKey = $today->format('Y');
 
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $partsFilter)) {
+        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
             continue;
         }
 
@@ -996,7 +1034,7 @@ if ($section === 'table_top_products') {
 
     $soldByItem = [];
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $partsFilter)) {
+        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
             continue;
         }
 
@@ -1077,7 +1115,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         $selectedCompany,
         'AppPurchaseOrderPurchLines',
         [
-            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Line_Amount',
+            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
             '$filter' => "Order_Date ge $fromDate",
         ],
         $auth,
@@ -1115,6 +1153,10 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
     foreach ($purchaseOrderLines as $line) {
         $lineType = normalize((string) ($line['Type'] ?? ''));
         if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+            continue;
+        }
+
+        if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
             continue;
         }
 
