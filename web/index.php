@@ -46,7 +46,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         }
 
         .wrap {
-            max-width: 1360px;
+            max-width: 1720px;
             margin: 0 auto;
             padding: 20px;
             position: relative;

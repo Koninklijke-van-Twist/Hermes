@@ -840,7 +840,7 @@ if ($section === 'table_top_products') {
         $selectedCompany,
         'SalesLines',
         [
-            '$select' => 'Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+            '$select' => 'Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,KVT_Total_Costs_Line_LCY,KVT_Margin,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
             '$filter' => "Shipment_Date ge $fromDate",
         ],
         $auth,
@@ -894,10 +894,67 @@ if ($section === 'table_top_products') {
             continue;
         }
 
-        $soldByItem[$itemLabel] = ($soldByItem[$itemLabel] ?? 0.0) + $qty;
+        $ratio = 1.0;
+        if ($quantity > 0.0) {
+            $ratio = $qty / $quantity;
+            if ($ratio > 1.0) {
+                $ratio = 1.0;
+            }
+        }
+
+        $lineSales = as_float($row['Line_Amount'] ?? 0) * $ratio;
+        $lineCostRaw = $row['KVT_Total_Costs_Line_LCY'] ?? null;
+        $lineMarginRaw = $row['KVT_Margin'] ?? null;
+        $lineCost = ($lineCostRaw !== null && $lineCostRaw !== '') ? as_float($lineCostRaw) * $ratio : null;
+        $lineMargin = ($lineMarginRaw !== null && $lineMarginRaw !== '') ? as_float($lineMarginRaw) * $ratio : null;
+
+        if (!isset($soldByItem[$itemLabel])) {
+            $soldByItem[$itemLabel] = [
+                'qty' => 0.0,
+                'sales' => 0.0,
+                'cost' => 0.0,
+                'costKnown' => false,
+                'margin' => 0.0,
+                'marginKnown' => false,
+            ];
+        }
+
+        $soldByItem[$itemLabel]['qty'] += $qty;
+        $soldByItem[$itemLabel]['sales'] += $lineSales;
+        if ($lineCost !== null) {
+            $soldByItem[$itemLabel]['cost'] += $lineCost;
+            $soldByItem[$itemLabel]['costKnown'] = true;
+        }
+        if ($lineMargin !== null) {
+            $soldByItem[$itemLabel]['margin'] += $lineMargin;
+            $soldByItem[$itemLabel]['marginKnown'] = true;
+        }
     }
 
-    arsort($soldByItem);
+    $soldByItemFiltered = [];
+    foreach ($soldByItem as $itemLabel => $stats) {
+        $sales = (float) ($stats['sales'] ?? 0.0);
+        $costKnown = !empty($stats['costKnown']);
+        $marginKnown = !empty($stats['marginKnown']);
+        $margin = (float) ($stats['margin'] ?? 0.0);
+
+        if (!$marginKnown && $costKnown) {
+            $margin = $sales - (float) ($stats['cost'] ?? 0.0);
+            $marginKnown = true;
+        }
+
+        if (!$marginKnown || $margin <= 0.0) {
+            continue;
+        }
+
+        $stats['marginFinal'] = $margin;
+        $soldByItemFiltered[$itemLabel] = $stats;
+    }
+    $soldByItem = $soldByItemFiltered;
+
+    uasort($soldByItem, function (array $a, array $b): int {
+        return ($b['qty'] ?? 0) <=> ($a['qty'] ?? 0);
+    });
     $soldByItem = array_slice($soldByItem, 0, 10, true);
 
     ob_start();
@@ -908,13 +965,22 @@ if ($section === 'table_top_products') {
             <tr>
                 <th>Product</th>
                 <th class="right">Aantal</th>
+                <th class="right">Totaalprijs</th>
+                <th class="right">Marge</th>
             </tr>
         </thead>
         <tbody>
-            <?php foreach ($soldByItem as $item => $qty): ?>
+            <?php foreach ($soldByItem as $item => $stats): ?>
+                <?php
+                $qty = (float) ($stats['qty'] ?? 0.0);
+                $sales = (float) ($stats['sales'] ?? 0.0);
+                $margin = (float) ($stats['marginFinal'] ?? 0.0);
+                ?>
                 <tr>
                     <td><?= html((string) $item) ?></td>
-                    <td class="right"><?= html(fmt_number((float) $qty, 2)) ?></td>
+                    <td class="right"><?= html(fmt_number($qty, 2)) ?></td>
+                    <td class="right"><?= html(fmt_money($sales)) ?></td>
+                    <td class="right"><?= html(fmt_money($margin)) ?></td>
                 </tr>
             <?php endforeach; ?>
         </tbody>
@@ -930,7 +996,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         $selectedCompany,
         'AppPurchaseOrderPurchLines',
         [
-            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Unit_Cost_LCY,Unit_Price_LCY,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
             '$filter' => "Order_Date ge $fromDate",
         ],
         $auth,
@@ -990,10 +1056,19 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         }
 
         $qty = as_float($line['Quantity'] ?? 0);
+        $unitCost = as_float($line['Direct_Unit_Cost'] ?? ($line['Unit_Cost_LCY'] ?? 0));
+        $unitSalesPrice = as_float($line['Unit_Price_LCY'] ?? 0);
+
         $amountValue = as_float($line['Line_Amount'] ?? 0);
         if ($amountValue == 0.0 && $qty != 0.0) {
-            $amountValue = $qty * as_float($line['Direct_Unit_Cost'] ?? 0);
+            if ($unitSalesPrice != 0.0) {
+                $amountValue = $qty * $unitSalesPrice;
+            } else {
+                $amountValue = $qty * $unitCost;
+            }
         }
+
+        $unitPriceValue = $qty != 0.0 ? ($amountValue / $qty) : null;
 
         $yearKey = $orderDate->format('Y');
         $monthKey = $orderDate->format('Y-m');
@@ -1036,6 +1111,8 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
             'description' => trim((string) ($line['Description'] ?? '')),
             'quantity' => $qty,
             'document' => $documentNo,
+            'unitPrice' => $unitPriceValue,
+            'totalPrice' => $amountValue,
         ];
     }
 
@@ -1057,6 +1134,8 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                     <th>Item</th>
                     <th>Omschrijving</th>
                     <th class="right">Aantal</th>
+                    <th class="right">Prijs/stuk</th>
+                    <th class="right">Totaalprijs</th>
                 </tr>
             </thead>
             <tbody>
@@ -1068,6 +1147,8 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                         <td><?= html((string) $row['item']) ?></td>
                         <td><?= html((string) $row['description']) ?></td>
                         <td class="right"><?= html(fmt_number((float) $row['quantity'], 2)) ?></td>
+                        <td class="right"><?= $row['unitPrice'] !== null ? html(fmt_money((float) $row['unitPrice'])) : '-' ?></td>
+                        <td class="right"><?= html(fmt_money((float) $row['totalPrice'])) ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
