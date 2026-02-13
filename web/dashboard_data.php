@@ -223,21 +223,35 @@ function sparkline_svg(array $values): string
     return '<svg class="mini-spark" viewBox="0 0 52 14" aria-hidden="true" focusable="false"><polyline points="' . $pointsAttr . '"/></svg>';
 }
 
-function trend_arrow_html(?float $previous, float $current): string
+function trend_arrow_html(?float $previous, float $current, string $variant = 'default'): string
 {
+    $isInbound = strtolower($variant) === 'inbound';
+    $upClass = $isInbound ? 'trend-inbound-up' : 'trend-up';
+    $downClass = $isInbound ? 'trend-inbound-down' : 'trend-down';
+    $flatClass = $isInbound ? 'trend-inbound-flat' : 'trend-flat';
+
     if ($previous === null) {
-        return '<span class="trend-arrow trend-flat">•</span>';
+        return '<span class="trend-arrow ' . $flatClass . '">•</span>';
     }
 
     if ($current > $previous) {
-        return '<span class="trend-arrow trend-up">▲</span>';
+        return '<span class="trend-arrow ' . $upClass . '">▲</span>';
     }
 
     if ($current < $previous) {
-        return '<span class="trend-arrow trend-down">▼</span>';
+        return '<span class="trend-arrow ' . $downClass . '">▼</span>';
     }
 
-    return '<span class="trend-arrow trend-flat">•</span>';
+    return '<span class="trend-arrow ' . $flatClass . '">•</span>';
+}
+
+function trend_arrow_strict_html(?float $previous, float $current, string $variant = 'default'): string
+{
+    if ($previous === null || $current == $previous) {
+        return '';
+    }
+
+    return trend_arrow_html($previous, $current, $variant);
 }
 
 function parse_numeric_value($value): ?float
@@ -876,10 +890,15 @@ if ($section === 'table_omzet_productgroep') {
                     foreach ($yearsAsc as $yearAscData) {
                         $yearSeriesAsc[] = (float) ($yearAscData['total'] ?? 0.0);
                     }
+
+                    $productYearRows = array_values($productData['years']);
+                    $latestYearValue = isset($productYearRows[0]) ? (float) ($productYearRows[0]['total'] ?? 0.0) : 0.0;
+                    $previousYearValue = isset($productYearRows[1]) ? (float) ($productYearRows[1]['total'] ?? 0.0) : null;
+                    $productTrendHtml = trend_arrow_strict_html($previousYearValue, $latestYearValue);
                     ?>
                     <details class="inbound-level-year">
                         <summary>
-                            <span class="inbound-label"><?= html((string) $productData['label']) ?></span>
+                            <span class="inbound-label"><?= $productTrendHtml ?><?= html((string) $productData['label']) ?></span>
                             <span class="inbound-values">
                                 <?= sparkline_svg($yearSeriesAsc) ?>
                                 <strong><?= html(fmt_money((float) ($productData['currentYearTotal'] ?? 0.0))) ?></strong>
@@ -1053,40 +1072,75 @@ if ($section === 'table_top_products') {
 
 if ($section === 'inbound_totals' || $section === 'inbound_latest') {
     $errors = [];
-    $purchaseReceipts = odata_fetch_safe(
+    $purchaseOrderLines = odata_fetch_safe(
         $environment,
         $selectedCompany,
-        'PurchaseReceiptLines',
+        'AppPurchaseOrderPurchLines',
         [
-            '$select' => 'Expected_Receipt_Date,Buy_from_Vendor_No,Pay_to_Vendor_No,No,Description,Quantity,Document_No,LVS_Amt_Rcd_Not_Invoiced',
-            '$filter' => "Expected_Receipt_Date ge $fromDate",
+            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Line_Amount',
+            '$filter' => "Order_Date ge $fromDate",
         ],
         $auth,
         $errors
     );
 
+    $purchaseOrders = odata_fetch_safe(
+        $environment,
+        $selectedCompany,
+        'AppPurchaseOrder',
+        [
+            '$select' => 'No,Buy_from_Vendor_No,Order_Date',
+            '$filter' => "Order_Date ge $fromDate",
+        ],
+        $auth,
+        $errors
+    );
+
+    $purchaseOrderHeaderMap = [];
+    foreach ($purchaseOrders as $order) {
+        $orderNo = trim((string) ($order['No'] ?? ''));
+        if ($orderNo === '') {
+            continue;
+        }
+
+        $purchaseOrderHeaderMap[$orderNo] = [
+            'buyVendorNo' => trim((string) ($order['Buy_from_Vendor_No'] ?? '')),
+            'orderDate' => trim((string) ($order['Order_Date'] ?? '')),
+        ];
+    }
+
     $inboundRows = [];
     $inboundSummary = [];
 
-    foreach ($purchaseReceipts as $receipt) {
-        $buyVendorNo = trim((string) ($receipt['Buy_from_Vendor_No'] ?? ''));
-        $payVendorNo = trim((string) ($receipt['Pay_to_Vendor_No'] ?? ''));
-
-        if ($vendorFilter !== '' && $buyVendorNo !== $vendorFilter && $payVendorNo !== $vendorFilter) {
+    foreach ($purchaseOrderLines as $line) {
+        $lineType = normalize((string) ($line['Type'] ?? ''));
+        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
             continue;
         }
 
-        $receiptDate = parse_bc_date($receipt['Expected_Receipt_Date'] ?? null);
-        if (!$receiptDate) {
+        $documentNo = trim((string) ($line['Document_No'] ?? ''));
+        $header = $documentNo !== '' ? ($purchaseOrderHeaderMap[$documentNo] ?? null) : null;
+        $buyVendorNo = trim((string) ($header['buyVendorNo'] ?? ''));
+
+        if ($vendorFilter !== '' && $buyVendorNo !== $vendorFilter) {
             continue;
         }
 
-        $qty = as_float($receipt['Quantity'] ?? 0);
-        $amountValue = as_float($receipt['LVS_Amt_Rcd_Not_Invoiced'] ?? 0);
+        $orderDateValue = (string) ($line['Order_Date'] ?? ($header['orderDate'] ?? ''));
+        $orderDate = parse_bc_date($orderDateValue);
+        if (!$orderDate) {
+            continue;
+        }
 
-        $yearKey = $receiptDate->format('Y');
-        $monthKey = $receiptDate->format('Y-m');
-        $weekStartDate = $receiptDate->modify('monday this week');
+        $qty = as_float($line['Quantity'] ?? 0);
+        $amountValue = as_float($line['Line_Amount'] ?? 0);
+        if ($amountValue == 0.0 && $qty != 0.0) {
+            $amountValue = $qty * as_float($line['Direct_Unit_Cost'] ?? 0);
+        }
+
+        $yearKey = $orderDate->format('Y');
+        $monthKey = $orderDate->format('Y-m');
+        $weekStartDate = $orderDate->modify('monday this week');
         $weekKey = $weekStartDate->format('Y-m-d');
 
         if ($amountValue != 0.0) {
@@ -1100,7 +1154,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
 
             if (!isset($inboundSummary[$yearKey]['months'][$monthKey])) {
                 $inboundSummary[$yearKey]['months'][$monthKey] = [
-                    'label' => nl_month_year_label($receiptDate),
+                    'label' => nl_month_year_label($orderDate),
                     'totalAmount' => 0.0,
                     'weeks' => [],
                 ];
@@ -1119,12 +1173,12 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         }
 
         $inboundRows[] = [
-            'date' => $receiptDate,
-            'vendor' => $buyVendorNo !== '' ? $buyVendorNo : $payVendorNo,
-            'item' => trim((string) ($receipt['No'] ?? '')),
-            'description' => trim((string) ($receipt['Description'] ?? '')),
+            'date' => $orderDate,
+            'vendor' => $buyVendorNo,
+            'item' => trim((string) ($line['No'] ?? '')),
+            'description' => trim((string) ($line['Description'] ?? '')),
             'quantity' => $qty,
-            'document' => trim((string) ($receipt['Document_No'] ?? '')),
+            'document' => $documentNo,
         ];
     }
 
@@ -1214,7 +1268,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                         }
                         ?>
                         <span
-                            class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue) ?><?= html((string) $yearData['label']) ?></span>
+                            class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue, 'inbound') ?><?= html((string) $yearData['label']) ?></span>
                         <span class="inbound-values">
                             <?= sparkline_svg($monthSeriesAsc) ?>
                             <strong><?= html(fmt_money($yearValue)) ?></strong>
@@ -1232,7 +1286,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                                         : null;
                                     ?>
                                     <span
-                                        class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue) ?><?= html((string) $monthData['label']) ?></span>
+                                        class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue, 'inbound') ?><?= html((string) $monthData['label']) ?></span>
                                     <span class="inbound-values">
                                         <strong><?= html(fmt_money($monthValue)) ?></strong>
                                     </span>
@@ -1248,7 +1302,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                                                 : null;
                                             ?>
                                             <span
-                                                class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
+                                                class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue, 'inbound') ?><?= html((string) $weekData['label']) ?></span>
                                             <span class="inbound-values">
                                                 <strong><?= html(fmt_money($weekValue)) ?></strong>
                                             </span>

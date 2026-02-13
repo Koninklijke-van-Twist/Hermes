@@ -361,6 +361,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             color: #9aa8bc;
         }
 
+        .trend-inbound-up {
+            color: #3b82f6;
+        }
+
+        .trend-inbound-down,
+        .trend-inbound-flat {
+            color: #8b97ab;
+        }
+
         .mini-spark {
             width: 52px;
             height: 14px;
