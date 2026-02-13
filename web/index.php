@@ -270,6 +270,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             border-radius: 8px;
             padding: 6px 8px;
             background: #fcfdff;
+            transition: background-color 220ms ease, border-color 220ms ease;
         }
 
         .inbound-tree details.inbound-level-year[open] {
@@ -287,6 +288,14 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             border: 1px solid #e6edf8;
             border-radius: 6px;
             padding: 6px 8px;
+        }
+
+        .inbound-row {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            padding: 6px 8px;
+            transition: background-color 220ms ease, border-color 220ms ease;
         }
 
         .inbound-tree summary {
