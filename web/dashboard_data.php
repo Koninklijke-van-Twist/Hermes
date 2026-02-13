@@ -391,18 +391,6 @@ function render_with_errors(string $html, array $errors): string
 
 if ($section === 'filter_options') {
     $errors = [];
-    $valueEntries = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'ValueEntries',
-        [
-            '$select' => 'AuxiliaryIndex1,Posting_Date',
-            '$filter' => "Posting_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
-
     $salesQuotes = odata_fetch_safe(
         $environment,
         $selectedCompany,
@@ -410,18 +398,6 @@ if ($section === 'filter_options') {
         [
             '$select' => 'Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code,Posting_Date',
             '$filter' => "Posting_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
-
-    $salesOrderLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesOrderSalesLines',
-        [
-            '$select' => 'Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code,LVS_Order_Intake_Date',
-            '$filter' => "LVS_Order_Intake_Date ge $fromDate",
         ],
         $auth,
         $errors
@@ -439,23 +415,7 @@ if ($section === 'filter_options') {
     );
 
     $departmentOptions = [];
-    foreach ($valueEntries as $row) {
-        $value = trim((string) ($row['AuxiliaryIndex1'] ?? ''));
-        if ($value !== '') {
-            $departmentOptions[normalize($value)] = $value;
-        }
-    }
-
     foreach ($salesQuotes as $row) {
-        foreach (['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'] as $field) {
-            $value = trim((string) ($row[$field] ?? ''));
-            if ($value !== '') {
-                $departmentOptions[normalize($value)] = $value;
-            }
-        }
-    }
-
-    foreach ($salesOrderLines as $row) {
         foreach (['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'] as $field) {
             $value = trim((string) ($row[$field] ?? ''));
             if ($value !== '') {
@@ -636,151 +596,6 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
             <span><?= html($label) ?></span>: <strong><?= html(fmt_number($leadTimeAvg[$k] ?? 0, 1)) ?></strong>
         </div>
     <?php endforeach; ?>
-    <?php
-    json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
-}
-
-if ($section === 'table_quote_score') {
-    $errors = [];
-
-    $salesQuotes = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesQuotes',
-        [
-            '$select' => 'No,External_Document_No,Posting_Date,Amount,Status,KVT_Sales_Order_No,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "Posting_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
-
-    $salesQuoteLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesQuoteSalesLines',
-        [
-            '$select' => 'Document_No,No,Line_Amount,Unit_Price,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-        ],
-        $auth,
-        $errors
-    );
-
-    $quoteStats = [
-        'week' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-        'maand' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-        'jaar' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-    ];
-
-    $quoteLineAmountByNo = [];
-    $quoteLineMatchesPartsByNo = [];
-    foreach ($salesQuoteLines as $quoteLine) {
-        $documentNo = first_non_empty($quoteLine, ['Document_No', 'Quote_No']);
-        if ($documentNo === '') {
-            continue;
-        }
-
-        $lineAmountRaw = first_non_empty($quoteLine, ['Line_Amount', 'Unit_Price']);
-        $lineAmountParsed = parse_numeric_value($lineAmountRaw);
-        $lineAmount = $lineAmountParsed !== null ? $lineAmountParsed : as_float($lineAmountRaw);
-        if ($lineAmount == 0.0) {
-            $lineAmount = 0.0;
-        }
-
-        $lineKey = normalize($documentNo);
-        $quoteLineAmountByNo[$lineKey] = ($quoteLineAmountByNo[$lineKey] ?? 0.0) + $lineAmount;
-
-        if (!isset($quoteLineMatchesPartsByNo[$lineKey])) {
-            $quoteLineMatchesPartsByNo[$lineKey] = false;
-        }
-        if (matches_code_filter($quoteLine, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
-            $quoteLineMatchesPartsByNo[$lineKey] = true;
-        }
-    }
-
-    foreach ($salesQuotes as $quote) {
-        $date = parse_bc_date($quote['Posting_Date'] ?? null);
-        if (!$date) {
-            continue;
-        }
-
-        $quoteNo = trim((string) ($quote['No'] ?? ''));
-        $externalDocNo = trim((string) ($quote['External_Document_No'] ?? ''));
-        $orderRef = first_non_empty($quote, ['KVT_Sales_Order_No', 'Sales_Order_No', 'Sales_Order_No_']);
-        $status = normalize((string) ($quote['Status'] ?? ''));
-        $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED', 'RELEASED'], true);
-
-        $amountRaw = first_non_empty($quote, ['Amount', 'Amount_Including_VAT', 'Total_Amount']);
-        $amountParsed = parse_numeric_value($amountRaw);
-        $amount = $amountParsed !== null ? $amountParsed : as_float($amountRaw);
-
-        $lookupKeys = [];
-        if ($quoteNo !== '') {
-            $lookupKeys[] = normalize($quoteNo);
-        }
-        if ($externalDocNo !== '') {
-            $lookupKeys[] = normalize($externalDocNo);
-        }
-
-        if ($amount == 0.0) {
-            foreach ($lookupKeys as $lookupKey) {
-                if (isset($quoteLineAmountByNo[$lookupKey])) {
-                    $amount = (float) $quoteLineAmountByNo[$lookupKey];
-                    break;
-                }
-            }
-        }
-
-        $headerMatchesParts = matches_code_filter($quote, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter);
-        $lineMatchesParts = false;
-        foreach (array_unique($lookupKeys) as $lookupKey) {
-            if (!empty($quoteLineMatchesPartsByNo[$lookupKey])) {
-                $lineMatchesParts = true;
-                break;
-            }
-        }
-        if (!$headerMatchesParts && !$lineMatchesParts) {
-            continue;
-        }
-
-        foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $p => $start) {
-            if (!in_period($date, $start, $today)) {
-                continue;
-            }
-            $quoteStats[$p]['total']++;
-            $quoteStats[$p]['waarde'] += $amount;
-            if ($isWon) {
-                $quoteStats[$p]['gewonnen']++;
-            }
-        }
-    }
-
-    ob_start();
-    ?>
-    <div class="table-title">Offerte score</div>
-    <table>
-        <thead>
-            <tr>
-                <th>Periode</th>
-                <th class="right"># Offertes</th>
-                <th class="right"># Gewonnen</th>
-                <th class="right">Score</th>
-                <th class="right">Offertewaarde</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($periods as $k => $label): ?>
-                <?php $qs = $quoteStats[$k]; ?>
-                <tr>
-                    <td><?= html($label) ?></td>
-                    <td class="right"><?= html((string) $qs['total']) ?></td>
-                    <td class="right"><?= html((string) $qs['gewonnen']) ?></td>
-                    <td class="right"><?= html(fmt_number(pct((float) $qs['gewonnen'], (float) $qs['total']), 1)) ?>%</td>
-                    <td class="right"><?= html(fmt_money((float) $qs['waarde'])) ?></td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }

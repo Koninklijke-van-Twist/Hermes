@@ -23,7 +23,7 @@ function html(string $value): string
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
-$partsFilter = trim((string) ($_GET['parts_filter'] ?? $_GET['department_filter'] ?? '15'));
+$departmentFilter = trim((string) ($_GET['department_filter'] ?? $_GET['parts_filter'] ?? '15'));
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 ?>
 <!doctype html>
@@ -475,7 +475,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
         <div class="header">
             <h1>Omzet Dashboard</h1>
-            <p class="sub">Omzet, offerte-score, order intake, levertijd, top 10 producten en inbound (week/maand/jaar).
+            <p class="sub">Omzet, order intake, levertijd, top 10 producten en inbound (week/maand/jaar).
             </p>
         </div>
 
@@ -491,16 +491,16 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 </select>
             </div>
             <div>
-                <label for="parts_filter">Afdelingscode</label>
-                <select id="parts_filter" name="parts_filter" data-selected="<?= html($partsFilter) ?>">
-                    <option value=""><?= $partsFilter === '' ? 'Alle afdelingen' : 'Laden...' ?></option>
-                    <?php if ($partsFilter !== ''): ?>
-                        <option value="<?= html($partsFilter) ?>" selected><?= html($partsFilter) ?></option>
+                <label for="department_filter">Afdelingscode</label>
+                <select id="department_filter" name="department_filter" data-selected="<?= html($departmentFilter) ?>">
+                    <option value=""><?= $departmentFilter === '' ? 'Alle afdelingen' : 'Laden...' ?></option>
+                    <?php if ($departmentFilter !== ''): ?>
+                        <option value="<?= html($departmentFilter) ?>" selected><?= html($departmentFilter) ?></option>
                     <?php endif; ?>
                 </select>
             </div>
             <div>
-                <label for="vendor_filter">Vendor</label>
+                <label for="vendor_filter">Vendor (voor inkoop)</label>
                 <select id="vendor_filter" name="vendor_filter" data-selected="<?= html($vendorFilter) ?>">
                     <option value=""><?= $vendorFilter === '' ? 'Alle vendors' : 'Laden...' ?></option>
                     <?php if ($vendorFilter !== ''): ?>
@@ -532,11 +532,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 </div>
             </div>
 
-            <div class="table-wrap" id="sec-table-quote-score">
-                <div class="loading-box large">
-                    <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
-                </div>
-            </div>
             <div class="table-wrap" id="sec-table-omzet-productgroep">
                 <div class="loading-box large">
                     <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
@@ -582,7 +577,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             const contentEl = document.getElementById('dashboardContent');
             const formEl = document.getElementById('dashboardFilters');
             const refreshButton = document.getElementById('refreshButton');
-            const partsSelect = document.getElementById('parts_filter');
+            const departmentSelect = document.getElementById('department_filter');
             const vendorSelect = document.getElementById('vendor_filter');
             const companySelect = document.getElementById('company');
             const cacheWidgetEl = document.getElementById('cacheWidget');
@@ -596,7 +591,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 { id: 'sec-card-omzet', section: 'card_omzet_parts', large: false },
                 { id: 'sec-card-order-intake', section: 'card_order_intake', large: false },
                 { id: 'sec-card-lead-time', section: 'card_lead_time', large: false },
-                { id: 'sec-table-quote-score', section: 'table_quote_score', large: true },
                 { id: 'sec-table-omzet-productgroep', section: 'table_omzet_productgroep', large: true },
                 { id: 'sec-top-week', section: 'table_top_products', period: 'week', large: true },
                 { id: 'sec-top-maand', section: 'table_top_products', period: 'maand', large: true },
@@ -633,14 +627,14 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
             function populateDepartmentOptions (options)
             {
-                const selected = partsSelect.dataset.selected || '';
+                const selected = departmentSelect.dataset.selected || '';
                 let html = '<option value="">Alle afdelingen</option>';
                 for (const option of options)
                 {
                     const isSelected = String(option.value).toUpperCase() === String(selected).toUpperCase();
                     html += '<option value="' + escapeHtml(option.value) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(option.value) + '</option>';
                 }
-                partsSelect.innerHTML = html;
+                departmentSelect.innerHTML = html;
             }
 
             function populateVendorOptions (options)
@@ -749,7 +743,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 setLoadingState(true);
                 const params = buildRequestParams();
 
-                partsSelect.dataset.selected = partsSelect.value;
+                departmentSelect.dataset.selected = departmentSelect.value;
                 vendorSelect.dataset.selected = vendorSelect.value;
 
                 if (pushState)
@@ -794,7 +788,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             {
                 const params = new URLSearchParams(window.location.search);
                 companySelect.value = params.get('company') || companySelect.value;
-                partsSelect.dataset.selected = params.get('parts_filter') || '';
+                departmentSelect.dataset.selected = params.get('department_filter') || params.get('parts_filter') || '';
                 vendorSelect.dataset.selected = params.get('vendor_filter') || '';
                 loadDashboard(false);
             });
