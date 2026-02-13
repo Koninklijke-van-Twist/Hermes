@@ -240,17 +240,6 @@ function trend_arrow_html(?float $previous, float $current): string
     return '<span class="trend-arrow trend-flat">•</span>';
 }
 
-function fallback_amount_html(float $value, bool $fallbackUsed): string
-{
-    $formatted = html(fmt_money($value));
-    if (!$fallbackUsed) {
-        return '<strong>' . $formatted . '</strong>';
-    }
-
-    $title = html('Waarschuwing: Sales_Amount_Actual was leeg/0, daarom wordt Sales_Amount_Expected gebruikt.');
-    return '<strong class="fallback-indicator" title="' . $title . '">' . $formatted . '</strong>';
-}
-
 function parse_numeric_value($value): ?float
 {
     if (is_int($value) || is_float($value)) {
@@ -337,67 +326,6 @@ function inbound_metric_sort_keys(array $keys): array
     });
 
     return $keys;
-}
-
-function odata_escape_string(string $value): string
-{
-    return str_replace("'", "''", $value);
-}
-
-function inbound_item_profit_map(array $itemNos, string $environment, string $selectedCompany, array $auth, array &$errors): array
-{
-    $itemNos = array_values(array_unique(array_filter(array_map('trim', $itemNos), function (string $itemNo): bool {
-        return $itemNo !== '';
-    })));
-
-    if (empty($itemNos)) {
-        return [];
-    }
-
-    $map = [];
-    $chunkSize = 25;
-    for ($offset = 0; $offset < count($itemNos); $offset += $chunkSize) {
-        $chunk = array_slice($itemNos, $offset, $chunkSize);
-        $filters = array_map(function (string $itemNo): string {
-            return "No eq '" . odata_escape_string($itemNo) . "'";
-        }, $chunk);
-
-        $rows = odata_fetch_safe(
-            $environment,
-            $selectedCompany,
-            'AppItemCard',
-            [
-                '$select' => 'No,Unit_Cost,Unit_Price,Profit_Percent',
-                '$filter' => implode(' or ', $filters),
-            ],
-            $auth,
-            $errors
-        );
-
-        foreach ($rows as $row) {
-            $itemNo = trim((string) ($row['No'] ?? ''));
-            if ($itemNo === '') {
-                continue;
-            }
-
-            $unitCost = parse_numeric_value($row['Unit_Cost'] ?? null);
-            $unitPrice = parse_numeric_value($row['Unit_Price'] ?? null);
-            $profitPct = parse_numeric_value($row['Profit_Percent'] ?? null);
-
-            $unitProfit = null;
-            if ($unitPrice !== null && $unitCost !== null) {
-                $unitProfit = $unitPrice - $unitCost;
-            } elseif ($unitPrice !== null && $profitPct !== null) {
-                $unitProfit = $unitPrice * ($profitPct / 100.0);
-            }
-
-            if ($unitProfit !== null) {
-                $map[$itemNo] = (float) $unitProfit;
-            }
-        }
-    }
-
-    return $map;
 }
 
 function pct(float $num, float $den): float
@@ -859,7 +787,6 @@ if ($section === 'table_omzet_productgroep') {
             $salesAmount = $lineAmount;
         }
 
-        $usedFallbackAmount = false;
         $itemNo = trim((string) ($row['No'] ?? ''));
         $itemDesc = trim((string) ($row['Description'] ?? ''));
         if ($itemNo === '') {
@@ -876,8 +803,6 @@ if ($section === 'table_omzet_productgroep') {
             $omzetPerProduct[$itemLabel] = [
                 'label' => $itemLabel,
                 'currentYearTotal' => 0.0,
-                'currentYearFallbackUsed' => false,
-                'fallbackUsed' => false,
                 'years' => [],
             ];
         }
@@ -886,7 +811,6 @@ if ($section === 'table_omzet_productgroep') {
             $omzetPerProduct[$itemLabel]['years'][$yearKey] = [
                 'label' => $yearKey,
                 'total' => 0.0,
-                'fallbackUsed' => false,
                 'months' => [],
             ];
         }
@@ -895,7 +819,6 @@ if ($section === 'table_omzet_productgroep') {
             $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey] = [
                 'label' => nl_month_year_label($postingDate),
                 'total' => 0.0,
-                'fallbackUsed' => false,
                 'weeks' => [],
             ];
         }
@@ -904,7 +827,6 @@ if ($section === 'table_omzet_productgroep') {
             $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
                 'label' => nl_week_label($weekStartDate),
                 'total' => 0.0,
-                'fallbackUsed' => false,
             ];
         }
 
@@ -912,18 +834,8 @@ if ($section === 'table_omzet_productgroep') {
         $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['total'] += $salesAmount;
         $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['total'] += $salesAmount;
 
-        if ($usedFallbackAmount) {
-            $omzetPerProduct[$itemLabel]['fallbackUsed'] = true;
-            $omzetPerProduct[$itemLabel]['years'][$yearKey]['fallbackUsed'] = true;
-            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['fallbackUsed'] = true;
-            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['fallbackUsed'] = true;
-        }
-
         if ($yearKey === $currentYearKey) {
             $omzetPerProduct[$itemLabel]['currentYearTotal'] += $salesAmount;
-            if ($usedFallbackAmount) {
-                $omzetPerProduct[$itemLabel]['currentYearFallbackUsed'] = true;
-            }
         }
     }
 
@@ -970,7 +882,7 @@ if ($section === 'table_omzet_productgroep') {
                             <span class="inbound-label"><?= html((string) $productData['label']) ?></span>
                             <span class="inbound-values">
                                 <?= sparkline_svg($yearSeriesAsc) ?>
-                                <?= fallback_amount_html((float) ($productData['currentYearTotal'] ?? 0.0), (bool) ($productData['currentYearFallbackUsed'] ?? false)) ?>
+                                <strong><?= html(fmt_money((float) ($productData['currentYearTotal'] ?? 0.0))) ?></strong>
                             </span>
                         </summary>
                         <div class="inbound-children">
@@ -989,11 +901,10 @@ if ($section === 'table_omzet_productgroep') {
                                         foreach ($monthsAsc as $monthAscData) {
                                             $monthSeriesAsc[] = (float) ($monthAscData['total'] ?? 0.0);
                                         }
-                                        $yearFallbackUsed = (bool) ($yearData['fallbackUsed'] ?? false);
                                         ?>
                                         <span
                                             class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue) ?><?= html((string) $yearData['label']) ?></span><span
-                                            class="inbound-values"><?= sparkline_svg($monthSeriesAsc) ?><?= fallback_amount_html($yearValue, $yearFallbackUsed) ?>
+                                            class="inbound-values"><?= sparkline_svg($monthSeriesAsc) ?><strong><?= html(fmt_money($yearValue)) ?></strong>
                                         </span>
                                     </summary>
                                     <div class="inbound-children">
@@ -1006,12 +917,11 @@ if ($section === 'table_omzet_productgroep') {
                                                     $nextMonthValue = isset($monthRows[$monthIndex + 1])
                                                         ? (float) ($monthRows[$monthIndex + 1]['total'] ?? 0.0)
                                                         : null;
-                                                    $monthFallbackUsed = (bool) ($monthData['fallbackUsed'] ?? false);
                                                     ?>
                                                     <span
                                                         class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue) ?><?= html((string) $monthData['label']) ?></span>
                                                     <span class="inbound-values">
-                                                        <?= fallback_amount_html($monthValue, $monthFallbackUsed) ?>
+                                                        <strong><?= html(fmt_money($monthValue)) ?></strong>
                                                     </span>
                                                 </summary>
                                                 <div class="inbound-children">
@@ -1023,12 +933,11 @@ if ($section === 'table_omzet_productgroep') {
                                                             $nextWeekValue = isset($weekRows[$weekIndex + 1])
                                                                 ? (float) ($weekRows[$weekIndex + 1]['total'] ?? 0.0)
                                                                 : null;
-                                                            $weekFallbackUsed = (bool) ($weekData['fallbackUsed'] ?? false);
                                                             ?>
                                                             <span
                                                                 class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
                                                             <span class="inbound-values">
-                                                                <?= fallback_amount_html($weekValue, $weekFallbackUsed) ?>
+                                                                <strong><?= html(fmt_money($weekValue)) ?></strong>
                                                             </span>
                                                         </div>
                                                     <?php endforeach; ?>
@@ -1149,6 +1058,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         $selectedCompany,
         'PurchaseReceiptLines',
         [
+            '$select' => 'Expected_Receipt_Date,Buy_from_Vendor_No,Pay_to_Vendor_No,No,Description,Quantity,Document_No,LVS_Amt_Rcd_Not_Invoiced',
             '$filter' => "Expected_Receipt_Date ge $fromDate",
         ],
         $auth,
@@ -1157,16 +1067,6 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
 
     $inboundRows = [];
     $inboundSummary = [];
-    $inboundItemNos = [];
-
-    foreach ($purchaseReceipts as $receipt) {
-        $itemNo = trim((string) ($receipt['No'] ?? ''));
-        if ($itemNo !== '') {
-            $inboundItemNos[] = $itemNo;
-        }
-    }
-
-    $itemProfitMap = inbound_item_profit_map($inboundItemNos, $environment, $selectedCompany, $auth, $errors);
 
     foreach ($purchaseReceipts as $receipt) {
         $buyVendorNo = trim((string) ($receipt['Buy_from_Vendor_No'] ?? ''));
@@ -1182,23 +1082,18 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         }
 
         $qty = as_float($receipt['Quantity'] ?? 0);
-        $itemNo = trim((string) ($receipt['No'] ?? ''));
-        $unitProfit = $itemNo !== '' ? ($itemProfitMap[$itemNo] ?? null) : null;
-        $profitValue = null;
-        if ($unitProfit !== null) {
-            $profitValue = $unitProfit * $qty;
-        }
+        $amountValue = as_float($receipt['LVS_Amt_Rcd_Not_Invoiced'] ?? 0);
 
         $yearKey = $receiptDate->format('Y');
         $monthKey = $receiptDate->format('Y-m');
         $weekStartDate = $receiptDate->modify('monday this week');
         $weekKey = $weekStartDate->format('Y-m-d');
 
-        if ($profitValue !== null) {
+        if ($amountValue != 0.0) {
             if (!isset($inboundSummary[$yearKey])) {
                 $inboundSummary[$yearKey] = [
                     'label' => $yearKey,
-                    'totalProfit' => 0.0,
+                    'totalAmount' => 0.0,
                     'months' => [],
                 ];
             }
@@ -1206,7 +1101,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
             if (!isset($inboundSummary[$yearKey]['months'][$monthKey])) {
                 $inboundSummary[$yearKey]['months'][$monthKey] = [
                     'label' => nl_month_year_label($receiptDate),
-                    'totalProfit' => 0.0,
+                    'totalAmount' => 0.0,
                     'weeks' => [],
                 ];
             }
@@ -1214,13 +1109,13 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
             if (!isset($inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
                 $inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
                     'label' => nl_week_label($weekStartDate),
-                    'totalProfit' => 0.0,
+                    'totalAmount' => 0.0,
                 ];
             }
 
-            $inboundSummary[$yearKey]['totalProfit'] += $profitValue;
-            $inboundSummary[$yearKey]['months'][$monthKey]['totalProfit'] += $profitValue;
-            $inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey]['totalProfit'] += $profitValue;
+            $inboundSummary[$yearKey]['totalAmount'] += $amountValue;
+            $inboundSummary[$yearKey]['months'][$monthKey]['totalAmount'] += $amountValue;
+            $inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey]['totalAmount'] += $amountValue;
         }
 
         $inboundRows[] = [
@@ -1284,21 +1179,21 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
     ?>
     <h3>Inbound Totalen</h3>
     <?php if (empty($inboundSummary)): ?>
-        <p class="small">Geen winstdata beschikbaar.</p>
+        <p class="small">Geen inkoopwaardedata beschikbaar.</p>
     <?php else: ?>
         <?php
         $inboundYearSeriesAsc = [];
         $yearsAsc = $inboundSummary;
         ksort($yearsAsc, SORT_NATURAL);
         foreach ($yearsAsc as $yearAscData) {
-            $inboundYearSeriesAsc[] = (float) ($yearAscData['totalProfit'] ?? 0.0);
+            $inboundYearSeriesAsc[] = (float) ($yearAscData['totalAmount'] ?? 0.0);
         }
         ?>
         <div class="inbound-head">
             <span>Periode</span>
             <span class="inbound-values">
                 <?= sparkline_svg($inboundYearSeriesAsc) ?>
-                <strong>Winst</strong>
+                <strong>Inkoopwaarde</strong>
             </span>
         </div>
         <div class="inbound-tree">
@@ -1307,15 +1202,15 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                 <details class="inbound-level-year">
                     <summary>
                         <?php
-                        $yearValue = (float) ($yearData['totalProfit'] ?? 0.0);
+                        $yearValue = (float) ($yearData['totalAmount'] ?? 0.0);
                         $nextYearValue = isset($yearRows[$yearIndex + 1])
-                            ? (float) ($yearRows[$yearIndex + 1]['totalProfit'] ?? 0.0)
+                            ? (float) ($yearRows[$yearIndex + 1]['totalAmount'] ?? 0.0)
                             : null;
                         $monthSeriesAsc = [];
                         $monthsAsc = $yearData['months'];
                         ksort($monthsAsc, SORT_NATURAL);
                         foreach ($monthsAsc as $monthAscData) {
-                            $monthSeriesAsc[] = (float) ($monthAscData['totalProfit'] ?? 0.0);
+                            $monthSeriesAsc[] = (float) ($monthAscData['totalAmount'] ?? 0.0);
                         }
                         ?>
                         <span
@@ -1331,9 +1226,9 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                             <details class="inbound-level-month">
                                 <summary>
                                     <?php
-                                    $monthValue = (float) ($monthData['totalProfit'] ?? 0.0);
+                                    $monthValue = (float) ($monthData['totalAmount'] ?? 0.0);
                                     $nextMonthValue = isset($monthRows[$monthIndex + 1])
-                                        ? (float) ($monthRows[$monthIndex + 1]['totalProfit'] ?? 0.0)
+                                        ? (float) ($monthRows[$monthIndex + 1]['totalAmount'] ?? 0.0)
                                         : null;
                                     ?>
                                     <span
@@ -1347,9 +1242,9 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                                     <?php foreach ($weekRows as $weekIndex => $weekData): ?>
                                         <div class="inbound-row">
                                             <?php
-                                            $weekValue = (float) ($weekData['totalProfit'] ?? 0.0);
+                                            $weekValue = (float) ($weekData['totalAmount'] ?? 0.0);
                                             $nextWeekValue = isset($weekRows[$weekIndex + 1])
-                                                ? (float) ($weekRows[$weekIndex + 1]['totalProfit'] ?? 0.0)
+                                                ? (float) ($weekRows[$weekIndex + 1]['totalAmount'] ?? 0.0)
                                                 : null;
                                             ?>
                                             <span
