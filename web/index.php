@@ -131,7 +131,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             padding: 12px;
             margin: 14px 0 18px 0;
             display: grid;
-            grid-template-columns: repeat(4, minmax(170px, 1fr));
+            grid-template-columns: repeat(2, minmax(170px, 1fr));
             gap: 10px;
         }
 
@@ -182,6 +182,27 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             margin: 0 0 10px 0;
             font-size: 15px;
             color: #314257;
+        }
+
+        .card-header-inline {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .card-header-inline h3 {
+            margin: 0;
+        }
+
+        .card-header-inline .field-inline {
+            min-width: 240px;
+            max-width: 320px;
+        }
+
+        .card-header-inline .field-inline label {
+            margin-bottom: 3px;
         }
 
         .table-wrap {
@@ -499,18 +520,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     <?php endif; ?>
                 </select>
             </div>
-            <div>
-                <label for="vendor_filter">Vendor (voor inkoop)</label>
-                <select id="vendor_filter" name="vendor_filter" data-selected="<?= html($vendorFilter) ?>">
-                    <option value=""><?= $vendorFilter === '' ? 'Alle vendors' : 'Laden...' ?></option>
-                    <?php if ($vendorFilter !== ''): ?>
-                        <option value="<?= html($vendorFilter) ?>" selected><?= html($vendorFilter) ?></option>
-                    <?php endif; ?>
-                </select>
-            </div>
-            <div style="display:flex; align-items:end;">
-                <button type="submit" id="refreshButton">Vernieuwen</button>
-            </div>
         </form>
 
         <div id="dashboardContent" aria-busy="true">
@@ -558,8 +567,22 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
             <div class="grid" style="margin-top:14px;">
                 <div class="card" id="sec-inbound-totals">
-                    <div class="loading-box large">
-                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    <div class="card-header-inline">
+                        <h2>Inbound Totalen</h2>
+                        <div class="field-inline">
+                            <label for="inbound_vendor_filter">Vendor</label>
+                            <select id="inbound_vendor_filter" data-selected="<?= html($vendorFilter) ?>">
+                                <option value=""><?= $vendorFilter === '' ? 'Alle vendors' : 'Laden...' ?></option>
+                                <?php if ($vendorFilter !== ''): ?>
+                                    <option value="<?= html($vendorFilter) ?>" selected><?= html($vendorFilter) ?></option>
+                                <?php endif; ?>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="sec-inbound-totals-body">
+                        <div class="loading-box large">
+                            <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                        </div>
                     </div>
                 </div>
                 <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-latest">
@@ -576,9 +599,8 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         {
             const contentEl = document.getElementById('dashboardContent');
             const formEl = document.getElementById('dashboardFilters');
-            const refreshButton = document.getElementById('refreshButton');
             const departmentSelect = document.getElementById('department_filter');
-            const vendorSelect = document.getElementById('vendor_filter');
+            const inboundVendorSelect = document.getElementById('inbound_vendor_filter');
             const companySelect = document.getElementById('company');
             const cacheWidgetEl = document.getElementById('cacheWidget');
             const cacheBytesEl = document.getElementById('cacheBytes');
@@ -595,9 +617,13 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 { id: 'sec-top-week', section: 'table_top_products', period: 'week', large: true },
                 { id: 'sec-top-maand', section: 'table_top_products', period: 'maand', large: true },
                 { id: 'sec-top-jaar', section: 'table_top_products', period: 'jaar', large: true },
-                { id: 'sec-inbound-totals', section: 'inbound_totals', large: true },
+                { id: 'sec-inbound-totals-body', section: 'inbound_totals', large: true },
                 { id: 'sec-inbound-latest', section: 'inbound_latest', large: true },
             ];
+            const inboundSectionConfigs = sectionConfigs.filter(function (config)
+            {
+                return config.section === 'inbound_totals' || config.section === 'inbound_latest';
+            });
 
             function loadingMarkup (large)
             {
@@ -617,7 +643,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             function setLoadingState (isLoading)
             {
                 contentEl.setAttribute('aria-busy', isLoading ? 'true' : 'false');
-                refreshButton.disabled = isLoading;
             }
 
             function showSectionLoading (target, large)
@@ -639,14 +664,17 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
             function populateVendorOptions (options)
             {
-                const selected = vendorSelect.dataset.selected || '';
+                const selected = inboundVendorSelect ? (inboundVendorSelect.dataset.selected || '') : '';
                 let html = '<option value="">Alle vendors</option>';
                 for (const option of options)
                 {
                     const isSelected = String(option.value) === String(selected);
                     html += '<option value="' + escapeHtml(option.value) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(option.label) + '</option>';
                 }
-                vendorSelect.innerHTML = html;
+                if (inboundVendorSelect)
+                {
+                    inboundVendorSelect.innerHTML = html;
+                }
             }
 
             function renderError (target, message)
@@ -656,9 +684,18 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
             function highlightLoadedCard (target)
             {
-                target.classList.remove('card-glow');
-                void target.offsetWidth;
-                target.classList.add('card-glow');
+                const glowTarget = (target.classList.contains('card') || target.classList.contains('table-wrap'))
+                    ? target
+                    : target.closest('.card, .table-wrap');
+
+                if (!glowTarget)
+                {
+                    return;
+                }
+
+                glowTarget.classList.remove('card-glow');
+                void glowTarget.offsetWidth;
+                glowTarget.classList.add('card-glow');
             }
 
             function buildRequestParams (extraParams = {})
@@ -666,6 +703,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 const formData = new FormData(formEl);
                 const params = new URLSearchParams(formData);
                 params.set('company', companySelect.value || '');
+                params.set('vendor_filter', inboundVendorSelect ? (inboundVendorSelect.value || '') : '');
                 for (const [k, v] of Object.entries(extraParams))
                 {
                     params.set(k, String(v));
@@ -744,7 +782,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 const params = buildRequestParams();
 
                 departmentSelect.dataset.selected = departmentSelect.value;
-                vendorSelect.dataset.selected = vendorSelect.value;
+                if (inboundVendorSelect)
+                {
+                    inboundVendorSelect.dataset.selected = inboundVendorSelect.value;
+                }
 
                 if (pushState)
                 {
@@ -778,9 +819,35 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
             }
 
+            async function loadInboundOnly (pushState = false)
+            {
+                if (inboundVendorSelect)
+                {
+                    inboundVendorSelect.dataset.selected = inboundVendorSelect.value;
+                }
+
+                if (pushState)
+                {
+                    const params = buildRequestParams();
+                    history.pushState({}, '', '?' + params.toString());
+                }
+
+                await Promise.all(inboundSectionConfigs.map(loadSection));
+            }
+
             formEl.addEventListener('submit', function (event)
             {
                 event.preventDefault();
+                loadDashboard(true);
+            });
+
+            companySelect.addEventListener('change', function ()
+            {
+                loadDashboard(true);
+            });
+
+            departmentSelect.addEventListener('change', function ()
+            {
                 loadDashboard(true);
             });
 
@@ -789,9 +856,20 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 const params = new URLSearchParams(window.location.search);
                 companySelect.value = params.get('company') || companySelect.value;
                 departmentSelect.dataset.selected = params.get('department_filter') || params.get('parts_filter') || '';
-                vendorSelect.dataset.selected = params.get('vendor_filter') || '';
+                if (inboundVendorSelect)
+                {
+                    inboundVendorSelect.dataset.selected = params.get('vendor_filter') || '';
+                }
                 loadDashboard(false);
             });
+
+            if (inboundVendorSelect)
+            {
+                inboundVendorSelect.addEventListener('change', function ()
+                {
+                    loadInboundOnly(true);
+                });
+            }
 
             function setCacheGlow (className)
             {

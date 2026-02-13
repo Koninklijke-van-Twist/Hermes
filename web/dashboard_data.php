@@ -1169,7 +1169,6 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
 
     ob_start();
     ?>
-    <h3>Inbound Totalen</h3>
     <?php if (empty($inboundSummary)): ?>
         <p class="small">Geen inkoopwaardedata beschikbaar.</p>
     <?php else: ?>
