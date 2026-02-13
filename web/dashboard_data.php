@@ -185,6 +185,61 @@ function nl_week_label(DateTimeImmutable $weekStartDate): string
     return 'Week ' . $weekStartDate->format('W') . ' (' . $weekStartDate->format('d-m') . ' t/m ' . $weekEndDate->format('d-m') . ')';
 }
 
+function sparkline_svg(array $values): string
+{
+    $numericValues = array_values(array_map('floatval', $values));
+    if (count($numericValues) === 0) {
+        return '';
+    }
+
+    if (count($numericValues) === 1) {
+        $numericValues[] = $numericValues[0];
+    }
+
+    $min = min($numericValues);
+    $max = max($numericValues);
+    $range = $max - $min;
+
+    $width = 52.0;
+    $height = 14.0;
+    $paddingX = 1.0;
+    $paddingY = 1.0;
+    $plotWidth = $width - ($paddingX * 2.0);
+    $plotHeight = $height - ($paddingY * 2.0);
+
+    $points = [];
+    $count = count($numericValues);
+    foreach ($numericValues as $idx => $value) {
+        $x = $paddingX + ($count > 1 ? ($idx / ($count - 1)) * $plotWidth : 0);
+        if ($range == 0.0) {
+            $y = $paddingY + ($plotHeight / 2.0);
+        } else {
+            $y = $paddingY + (($max - $value) / $range) * $plotHeight;
+        }
+        $points[] = number_format($x, 2, '.', '') . ',' . number_format($y, 2, '.', '');
+    }
+
+    $pointsAttr = implode(' ', $points);
+    return '<svg class="mini-spark" viewBox="0 0 52 14" aria-hidden="true" focusable="false"><polyline points="' . $pointsAttr . '"/></svg>';
+}
+
+function trend_arrow_html(?float $previous, float $current): string
+{
+    if ($previous === null) {
+        return '<span class="trend-arrow trend-flat">•</span>';
+    }
+
+    if ($current > $previous) {
+        return '<span class="trend-arrow trend-up">▲</span>';
+    }
+
+    if ($current < $previous) {
+        return '<span class="trend-arrow trend-down">▼</span>';
+    }
+
+    return '<span class="trend-arrow trend-flat">•</span>';
+}
+
 function parse_numeric_value($value): ?float
 {
     if (is_int($value) || is_float($value)) {
@@ -849,35 +904,71 @@ if ($section === 'table_omzet_productgroep') {
             </div>
             <div class="inbound-tree">
                 <?php foreach ($omzetPerProduct as $productData): ?>
+                    <?php
+                    $yearSeriesAsc = [];
+                    $yearsAsc = $productData['years'];
+                    ksort($yearsAsc, SORT_NATURAL);
+                    foreach ($yearsAsc as $yearAscData) {
+                        $yearSeriesAsc[] = (float) ($yearAscData['total'] ?? 0.0);
+                    }
+                    ?>
                     <details class="inbound-level-year">
                         <summary>
-                            <span><?= html((string) $productData['label']) ?></span>
+                            <span class="inbound-label"><?= html((string) $productData['label']) ?></span>
                             <span class="inbound-values">
+                                <?= sparkline_svg($yearSeriesAsc) ?>
                                 <strong><?= html(fmt_money((float) ($productData['currentYearTotal'] ?? 0.0))) ?></strong>
                             </span>
                         </summary>
                         <div class="inbound-children">
-                            <?php foreach ($productData['years'] as $yearData): ?>
+                            <?php $yearRows = array_values($productData['years']); ?>
+                            <?php foreach ($yearRows as $yearIndex => $yearData): ?>
                                 <details class="inbound-level-year">
                                     <summary>
-                                        <span><?= html((string) $yearData['label']) ?></span><span class="inbound-values"><strong><?= html(fmt_money((float) ($yearData['total'] ?? 0.0))) ?></strong>
+                                        <?php
+                                        $yearValue = (float) ($yearData['total'] ?? 0.0);
+                                        $nextYearValue = isset($yearRows[$yearIndex + 1])
+                                            ? (float) ($yearRows[$yearIndex + 1]['total'] ?? 0.0)
+                                            : null;
+                                        $monthSeriesAsc = [];
+                                        $monthsAsc = $yearData['months'];
+                                        ksort($monthsAsc, SORT_NATURAL);
+                                        foreach ($monthsAsc as $monthAscData) {
+                                            $monthSeriesAsc[] = (float) ($monthAscData['total'] ?? 0.0);
+                                        }
+                                        ?>
+                                        <span class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue) ?><?= html((string) $yearData['label']) ?></span><span class="inbound-values"><?= sparkline_svg($monthSeriesAsc) ?><strong><?= html(fmt_money($yearValue)) ?></strong>
                                         </span>
                                     </summary>
                                     <div class="inbound-children">
-                                        <?php foreach ($yearData['months'] as $monthData): ?>
+                                        <?php $monthRows = array_values($yearData['months']); ?>
+                                        <?php foreach ($monthRows as $monthIndex => $monthData): ?>
                                             <details class="inbound-level-month">
                                                 <summary>
-                                                    <span><?= html((string) $monthData['label']) ?></span>
+                                                    <?php
+                                                    $monthValue = (float) ($monthData['total'] ?? 0.0);
+                                                    $nextMonthValue = isset($monthRows[$monthIndex + 1])
+                                                        ? (float) ($monthRows[$monthIndex + 1]['total'] ?? 0.0)
+                                                        : null;
+                                                    ?>
+                                                    <span class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue) ?><?= html((string) $monthData['label']) ?></span>
                                                     <span class="inbound-values">
-                                                        <strong><?= html(fmt_money((float) ($monthData['total'] ?? 0.0))) ?></strong>
+                                                        <strong><?= html(fmt_money($monthValue)) ?></strong>
                                                     </span>
                                                 </summary>
                                                 <div class="inbound-children">
-                                                    <?php foreach ($monthData['weeks'] as $weekData): ?>
+                                                    <?php $weekRows = array_values($monthData['weeks']); ?>
+                                                    <?php foreach ($weekRows as $weekIndex => $weekData): ?>
                                                         <div class="inbound-row">
-                                                            <span><?= html((string) $weekData['label']) ?></span>
+                                                            <?php
+                                                            $weekValue = (float) ($weekData['total'] ?? 0.0);
+                                                            $nextWeekValue = isset($weekRows[$weekIndex + 1])
+                                                                ? (float) ($weekRows[$weekIndex + 1]['total'] ?? 0.0)
+                                                                : null;
+                                                            ?>
+                                                            <span class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
                                                             <span class="inbound-values">
-                                                                <strong><?= html(fmt_money((float) ($weekData['total'] ?? 0.0))) ?></strong>
+                                                                <strong><?= html(fmt_money($weekValue)) ?></strong>
                                                             </span>
                                                         </div>
                                                     <?php endforeach; ?>
@@ -1121,36 +1212,73 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
     <?php if (empty($inboundSummary)): ?>
         <p class="small">Geen winstdata beschikbaar.</p>
     <?php else: ?>
+        <?php
+        $inboundYearSeriesAsc = [];
+        $yearsAsc = $inboundSummary;
+        ksort($yearsAsc, SORT_NATURAL);
+        foreach ($yearsAsc as $yearAscData) {
+            $inboundYearSeriesAsc[] = (float) ($yearAscData['totalProfit'] ?? 0.0);
+        }
+        ?>
         <div class="inbound-head">
             <span>Periode</span>
             <span class="inbound-values">
+                <?= sparkline_svg($inboundYearSeriesAsc) ?>
                 <strong>Winst</strong>
             </span>
         </div>
         <div class="inbound-tree">
-            <?php foreach ($inboundSummary as $yearData): ?>
+            <?php $yearRows = array_values($inboundSummary); ?>
+            <?php foreach ($yearRows as $yearIndex => $yearData): ?>
                 <details class="inbound-level-year">
                     <summary>
-                        <span><?= html((string) $yearData['label']) ?></span>
+                        <?php
+                        $yearValue = (float) ($yearData['totalProfit'] ?? 0.0);
+                        $nextYearValue = isset($yearRows[$yearIndex + 1])
+                            ? (float) ($yearRows[$yearIndex + 1]['totalProfit'] ?? 0.0)
+                            : null;
+                        $monthSeriesAsc = [];
+                        $monthsAsc = $yearData['months'];
+                        ksort($monthsAsc, SORT_NATURAL);
+                        foreach ($monthsAsc as $monthAscData) {
+                            $monthSeriesAsc[] = (float) ($monthAscData['totalProfit'] ?? 0.0);
+                        }
+                        ?>
+                        <span class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue) ?><?= html((string) $yearData['label']) ?></span>
                         <span class="inbound-values">
-                            <strong><?= html(fmt_money((float) ($yearData['totalProfit'] ?? 0.0))) ?></strong>
+                            <?= sparkline_svg($monthSeriesAsc) ?>
+                            <strong><?= html(fmt_money($yearValue)) ?></strong>
                         </span>
                     </summary>
                     <div class="inbound-children">
-                        <?php foreach ($yearData['months'] as $monthData): ?>
+                        <?php $monthRows = array_values($yearData['months']); ?>
+                        <?php foreach ($monthRows as $monthIndex => $monthData): ?>
                             <details class="inbound-level-month">
                                 <summary>
-                                    <span><?= html((string) $monthData['label']) ?></span>
+                                    <?php
+                                    $monthValue = (float) ($monthData['totalProfit'] ?? 0.0);
+                                    $nextMonthValue = isset($monthRows[$monthIndex + 1])
+                                        ? (float) ($monthRows[$monthIndex + 1]['totalProfit'] ?? 0.0)
+                                        : null;
+                                    ?>
+                                    <span class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue) ?><?= html((string) $monthData['label']) ?></span>
                                     <span class="inbound-values">
-                                        <strong><?= html(fmt_money((float) ($monthData['totalProfit'] ?? 0.0))) ?></strong>
+                                        <strong><?= html(fmt_money($monthValue)) ?></strong>
                                     </span>
                                 </summary>
                                 <div class="inbound-children">
-                                    <?php foreach ($monthData['weeks'] as $weekData): ?>
+                                    <?php $weekRows = array_values($monthData['weeks']); ?>
+                                    <?php foreach ($weekRows as $weekIndex => $weekData): ?>
                                         <div class="inbound-row">
-                                            <span><?= html((string) $weekData['label']) ?></span>
+                                            <?php
+                                            $weekValue = (float) ($weekData['totalProfit'] ?? 0.0);
+                                            $nextWeekValue = isset($weekRows[$weekIndex + 1])
+                                                ? (float) ($weekRows[$weekIndex + 1]['totalProfit'] ?? 0.0)
+                                                : null;
+                                            ?>
+                                            <span class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
                                             <span class="inbound-values">
-                                                <strong><?= html(fmt_money((float) ($weekData['totalProfit'] ?? 0.0))) ?></strong>
+                                                <strong><?= html(fmt_money($weekValue)) ?></strong>
                                             </span>
                                         </div>
                                     <?php endforeach; ?>

@@ -324,10 +324,55 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         }
 
         .inbound-values {
-            display: block;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
             font-variant-numeric: tabular-nums;
             text-align: right;
             white-space: nowrap;
+            justify-content: flex-end;
+            width: 100%;
+        }
+
+        .inbound-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .trend-arrow {
+            font-size: 10px;
+            line-height: 1;
+            width: 10px;
+            text-align: center;
+            flex: 0 0 10px;
+        }
+
+        .trend-up {
+            color: #0f8a41;
+        }
+
+        .trend-down {
+            color: #c73737;
+        }
+
+        .trend-flat {
+            color: #9aa8bc;
+        }
+
+        .mini-spark {
+            width: 52px;
+            height: 14px;
+            display: inline-block;
+        }
+
+        .mini-spark polyline {
+            fill: none;
+            stroke: #5f7fa8;
+            stroke-width: 1.6;
+            stroke-linecap: round;
+            stroke-linejoin: round;
         }
 
         .loading-box {
