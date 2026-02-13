@@ -2,9 +2,10 @@
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-require __DIR__ . "/auth.php";
+if (function_exists('xdebug_disable')) {
+    xdebug_disable();
+}
 require __DIR__ . "/logincheck.php";
-require __DIR__ . "/odata.php";
 
 $companies = [
     "Koninklijke van Twist",
@@ -17,486 +18,13 @@ if (!in_array($selectedCompany, $companies, true)) {
     $selectedCompany = $companies[0];
 }
 
-function odata_company_url(string $environment, string $company, string $entity, array $params = []): string
-{
-    global $baseUrl;
-    $encCompany = rawurlencode($company);
-    $base = $baseUrl . $environment . "/ODataV4/Company('" . $encCompany . "')/";
-    $query = '';
-    if (!empty($params)) {
-        $query = '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
-    }
-    return $base . $entity . $query;
-}
-
 function html(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
-function as_float($value): float
-{
-    if ($value === null || $value === '') {
-        return 0.0;
-    }
-    return (float) $value;
-}
-
-function first_non_empty(array $row, array $keys): string
-{
-    foreach ($keys as $key) {
-        if (!array_key_exists($key, $row)) {
-            continue;
-        }
-
-        $value = trim((string) $row[$key]);
-        if ($value !== '') {
-            return $value;
-        }
-    }
-
-    return '';
-}
-
-function parse_bc_date($value): ?DateTimeImmutable
-{
-    if (!is_string($value) || $value === '') {
-        return null;
-    }
-
-    $datePart = substr($value, 0, 10);
-    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $datePart);
-    return $dt ?: null;
-}
-
-function in_period(DateTimeImmutable $date, DateTimeImmutable $start, DateTimeImmutable $today): bool
-{
-    return $date >= $start && $date <= $today;
-}
-
-function normalize(string $value): string
-{
-    return strtoupper(trim($value));
-}
-
-function contains_filter(array $row, array $fields, string $needle): bool
-{
-    if ($needle === '') {
-        return true;
-    }
-
-    foreach ($fields as $field) {
-        $value = (string) ($row[$field] ?? '');
-        if ($value !== '' && mb_stripos($value, $needle, 0, 'UTF-8') !== false) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function code_matches(string $value, string $code): bool
-{
-    $normalizedValue = normalize($value);
-    if ($normalizedValue === '' || $code === '') {
-        return false;
-    }
-
-    if ($normalizedValue === $code) {
-        return true;
-    }
-
-    $pattern = '/(^|[^A-Z0-9])' . preg_quote($code, '/') . '([^A-Z0-9]|$)/';
-    return preg_match($pattern, $normalizedValue) === 1;
-}
-
-function matches_code_filter(array $row, array $fields, string $code): bool
-{
-    if ($code === '') {
-        return true;
-    }
-
-    foreach ($fields as $field) {
-        $value = (string) ($row[$field] ?? '');
-        if (code_matches($value, $code)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function period_value(array $totals, string $period): float
-{
-    return (float) ($totals[$period] ?? 0);
-}
-
-function fmt_money(float $value): string
-{
-    return '€ ' . number_format($value, 2, ',', '.');
-}
-
-function fmt_number(float $value, int $decimals = 0): string
-{
-    return number_format($value, $decimals, ',', '.');
-}
-
-function pct(float $num, float $den): float
-{
-    if ($den == 0.0) {
-        return 0.0;
-    }
-    return ($num / $den) * 100;
-}
-
-function push_period_total(array &$totals, DateTimeImmutable $date, float $amount, DateTimeImmutable $weekStart, DateTimeImmutable $monthStart, DateTimeImmutable $yearStart, DateTimeImmutable $today): void
-{
-    if (in_period($date, $yearStart, $today)) {
-        $totals['jaar'] = ($totals['jaar'] ?? 0.0) + $amount;
-    }
-    if (in_period($date, $monthStart, $today)) {
-        $totals['maand'] = ($totals['maand'] ?? 0.0) + $amount;
-    }
-    if (in_period($date, $weekStart, $today)) {
-        $totals['week'] = ($totals['week'] ?? 0.0) + $amount;
-    }
-}
-
-function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors): array
-{
-    try {
-        $url = odata_company_url($environment, $company, $entity, $params);
-        return odata_get_all($url, $auth, 1800);
-    } catch (Throwable $e) {
-        $errors[] = $entity . ': ' . $e->getMessage();
-        return [];
-    }
-}
-
-$partsFilter = normalize((string) ($_GET['parts_filter'] ?? $_GET['department_filter'] ?? '15'));
+$partsFilter = trim((string) ($_GET['parts_filter'] ?? $_GET['department_filter'] ?? '15'));
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
-
-$today = new DateTimeImmutable('today');
-$fromYear = (int) $today->format('Y') - 2;
-$fromDate = $today->setDate($fromYear, 1, 1)->format('Y-m-d');
-$weekStart = $today->modify('monday this week');
-$monthStart = $today->modify('first day of this month');
-$yearStart = $today->setDate((int) $today->format('Y'), 1, 1);
-
-$errors = [];
-
-$valueEntries = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'ValueEntries',
-    [
-        '$select' => 'Posting_Date,Item_No,Item_Description,Gen_Prod_Posting_Group,Sales_Amount_Actual,Invoiced_Quantity,AuxiliaryIndex1',
-        '$filter' => "Posting_Date ge $fromDate",
-    ],
-    $auth,
-    $errors
-);
-
-$salesQuotes = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'SalesQuotes',
-    [
-        '$select' => 'No,Posting_Date,Amount,Status,KVT_Sales_Order_No,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-        '$filter' => "Posting_Date ge $fromDate",
-    ],
-    $auth,
-    $errors
-);
-
-$salesQuoteLines = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'SalesQuoteSalesLines',
-    [
-        '$select' => 'Document_No,No,LVS_Line_No,Line_Amount,Unit_Price,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-    ],
-    $auth,
-    $errors
-);
-
-$salesOrderLines = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'SalesOrderSalesLines',
-    [
-        '$select' => 'Document_No,Line_No,LVS_Order_Intake_Date,Line_Amount,Shipment_Date,Requested_Delivery_Date,Promised_Delivery_Date,Gen_Prod_Posting_Group,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-        '$filter' => "LVS_Order_Intake_Date ge $fromDate",
-    ],
-    $auth,
-    $errors
-);
-
-$purchaseHdrVendor = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'Power_BI_Purchase_Hdr_Vendor',
-    [
-        '$select' => 'Vendor_No,Name',
-    ],
-    $auth,
-    $errors
-);
-
-$purchaseReceipts = odata_fetch_safe(
-    $environment,
-    $selectedCompany,
-    'PurchaseReceiptLines',
-    [
-        '$select' => 'Document_No,Line_No,Buy_from_Vendor_No,Pay_to_Vendor_No,Expected_Receipt_Date,Quantity,No,Description,VendorOrderNo',
-        '$filter' => "Expected_Receipt_Date ge $fromDate",
-    ],
-    $auth,
-    $errors
-);
-
-$departmentOptions = [];
-
-foreach ($valueEntries as $row) {
-    foreach (['AuxiliaryIndex1'] as $field) {
-        $value = trim((string) ($row[$field] ?? ''));
-        if ($value !== '') {
-            $departmentOptions[normalize($value)] = $value;
-        }
-    }
-}
-
-foreach ($salesQuotes as $row) {
-    foreach (['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'] as $field) {
-        $value = trim((string) ($row[$field] ?? ''));
-        if ($value !== '') {
-            $departmentOptions[normalize($value)] = $value;
-        }
-    }
-}
-
-foreach ($salesOrderLines as $row) {
-    foreach (['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'] as $field) {
-        $value = trim((string) ($row[$field] ?? ''));
-        if ($value !== '') {
-            $departmentOptions[normalize($value)] = $value;
-        }
-    }
-}
-
-ksort($departmentOptions, SORT_NATURAL);
-
-if ($partsFilter !== '' && !isset($departmentOptions[$partsFilter])) {
-    $departmentOptions[$partsFilter] = $partsFilter;
-    ksort($departmentOptions, SORT_NATURAL);
-}
-
-$vendorOptions = [];
-foreach ($purchaseHdrVendor as $row) {
-    $vendorNo = trim((string) ($row['Vendor_No'] ?? ''));
-    if ($vendorNo === '') {
-        continue;
-    }
-    $vendorName = trim((string) ($row['Name'] ?? ''));
-    $vendorOptions[$vendorNo] = $vendorName;
-}
-ksort($vendorOptions, SORT_NATURAL);
-
-if ($vendorFilter !== '' && !isset($vendorOptions[$vendorFilter])) {
-    $vendorOptions[$vendorFilter] = '';
-    ksort($vendorOptions, SORT_NATURAL);
-}
-
-$omzetParts = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
-$omzetPerProductgroep = [];
-$soldByItem = [
-    'week' => [],
-    'maand' => [],
-    'jaar' => [],
-];
-
-foreach ($valueEntries as $row) {
-    if (!matches_code_filter($row, ['AuxiliaryIndex1'], $partsFilter)) {
-        continue;
-    }
-
-    $postingDate = parse_bc_date($row['Posting_Date'] ?? null);
-    if (!$postingDate) {
-        continue;
-    }
-
-    $salesAmount = as_float($row['Sales_Amount_Actual'] ?? 0);
-    push_period_total($omzetParts, $postingDate, $salesAmount, $weekStart, $monthStart, $yearStart, $today);
-
-    $productgroep = trim((string) ($row['Gen_Prod_Posting_Group'] ?? 'Onbekend'));
-    if ($productgroep === '') {
-        $productgroep = 'Onbekend';
-    }
-
-    if (!isset($omzetPerProductgroep[$productgroep])) {
-        $omzetPerProductgroep[$productgroep] = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
-    }
-
-    push_period_total($omzetPerProductgroep[$productgroep], $postingDate, $salesAmount, $weekStart, $monthStart, $yearStart, $today);
-
-    $itemNo = trim((string) ($row['Item_No'] ?? ''));
-    $itemDesc = trim((string) ($row['Item_Description'] ?? ''));
-    if ($itemNo === '') {
-        continue;
-    }
-
-    $itemLabel = $itemNo . ($itemDesc !== '' ? ' - ' . $itemDesc : '');
-    $qty = abs(as_float($row['Invoiced_Quantity'] ?? 0));
-
-    if (in_period($postingDate, $yearStart, $today)) {
-        $soldByItem['jaar'][$itemLabel] = ($soldByItem['jaar'][$itemLabel] ?? 0.0) + $qty;
-    }
-    if (in_period($postingDate, $monthStart, $today)) {
-        $soldByItem['maand'][$itemLabel] = ($soldByItem['maand'][$itemLabel] ?? 0.0) + $qty;
-    }
-    if (in_period($postingDate, $weekStart, $today)) {
-        $soldByItem['week'][$itemLabel] = ($soldByItem['week'][$itemLabel] ?? 0.0) + $qty;
-    }
-}
-
-foreach ($soldByItem as $period => $rows) {
-    arsort($rows);
-    $soldByItem[$period] = array_slice($rows, 0, 10, true);
-}
-
-$quoteStats = [
-    'week' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-    'maand' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-    'jaar' => ['total' => 0, 'gewonnen' => 0, 'waarde' => 0.0],
-];
-
-$quoteLineAmountByNo = [];
-foreach ($salesQuoteLines as $quoteLine) {
-    $quoteNo = first_non_empty($quoteLine, ['Document_No', 'No', 'Quote_No']);
-    if ($quoteNo === '') {
-        continue;
-    }
-
-    $lineAmountRaw = first_non_empty($quoteLine, ['Line_Amount', 'Unit_Price']);
-    $lineAmount = as_float($lineAmountRaw);
-    $quoteLineAmountByNo[$quoteNo] = ($quoteLineAmountByNo[$quoteNo] ?? 0.0) + $lineAmount;
-}
-
-foreach ($salesQuotes as $quote) {
-    if (!matches_code_filter($quote, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $partsFilter)) {
-        continue;
-    }
-
-    $date = parse_bc_date($quote['Posting_Date'] ?? null);
-    if (!$date) {
-        continue;
-    }
-
-    $quoteNo = trim((string) ($quote['No'] ?? ''));
-    $orderRef = first_non_empty($quote, ['KVT_Sales_Order_No', 'Sales_Order_No', 'Sales_Order_No_']);
-    $status = normalize((string) ($quote['Status'] ?? ''));
-    $isWon = $orderRef !== '' || in_array($status, ['ORDER', 'WON', 'ACCEPTED', 'GEACCEPTEERD', 'AFGEROND', 'CONVERTED', 'RELEASED'], true);
-
-    $amountRaw = first_non_empty($quote, ['Amount', 'Amount_Including_VAT', 'Total_Amount']);
-    $amount = as_float($amountRaw);
-    if ($amount == 0.0 && $quoteNo !== '' && isset($quoteLineAmountByNo[$quoteNo])) {
-        $amount = (float) $quoteLineAmountByNo[$quoteNo];
-    }
-
-    foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $period => $start) {
-        if (!in_period($date, $start, $today)) {
-            continue;
-        }
-        $quoteStats[$period]['total']++;
-        $quoteStats[$period]['waarde'] += $amount;
-        if ($isWon) {
-            $quoteStats[$period]['gewonnen']++;
-        }
-    }
-}
-
-$orderIntake = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
-$leadTime = [
-    'week' => ['sum' => 0.0, 'count' => 0],
-    'maand' => ['sum' => 0.0, 'count' => 0],
-    'jaar' => ['sum' => 0.0, 'count' => 0],
-];
-
-foreach ($salesOrderLines as $line) {
-    if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code', 'Gen_Prod_Posting_Group'], $partsFilter)) {
-        continue;
-    }
-
-    $intakeDate = parse_bc_date($line['LVS_Order_Intake_Date'] ?? null);
-    $lineAmount = as_float($line['Line_Amount'] ?? 0);
-    if ($intakeDate) {
-        push_period_total($orderIntake, $intakeDate, $lineAmount, $weekStart, $monthStart, $yearStart, $today);
-    }
-
-    $shipmentDate = parse_bc_date($line['Shipment_Date'] ?? null);
-    if (!$intakeDate || !$shipmentDate) {
-        continue;
-    }
-
-    $days = (float) $intakeDate->diff($shipmentDate)->days;
-    if ($days < 0) {
-        continue;
-    }
-
-    foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $period => $start) {
-        if (!in_period($shipmentDate, $start, $today)) {
-            continue;
-        }
-        $leadTime[$period]['sum'] += $days;
-        $leadTime[$period]['count']++;
-    }
-}
-
-$leadTimeAvg = [
-    'week' => $leadTime['week']['count'] ? ($leadTime['week']['sum'] / $leadTime['week']['count']) : 0.0,
-    'maand' => $leadTime['maand']['count'] ? ($leadTime['maand']['sum'] / $leadTime['maand']['count']) : 0.0,
-    'jaar' => $leadTime['jaar']['count'] ? ($leadTime['jaar']['sum'] / $leadTime['jaar']['count']) : 0.0,
-];
-
-$inboundPerkins = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
-$inboundRows = [];
-
-foreach ($purchaseReceipts as $receipt) {
-    $buyVendorNo = trim((string) ($receipt['Buy_from_Vendor_No'] ?? ''));
-    $payVendorNo = trim((string) ($receipt['Pay_to_Vendor_No'] ?? ''));
-
-    if ($vendorFilter !== '' && $buyVendorNo !== $vendorFilter && $payVendorNo !== $vendorFilter) {
-        continue;
-    }
-
-    $receiptDate = parse_bc_date($receipt['Expected_Receipt_Date'] ?? null);
-    if (!$receiptDate) {
-        continue;
-    }
-
-    $qty = as_float($receipt['Quantity'] ?? 0);
-    push_period_total($inboundPerkins, $receiptDate, $qty, $weekStart, $monthStart, $yearStart, $today);
-
-    $inboundRows[] = [
-        'date' => $receiptDate,
-        'vendor' => $buyVendorNo !== '' ? $buyVendorNo : $payVendorNo,
-        'item' => trim((string) ($receipt['No'] ?? '')),
-        'description' => trim((string) ($receipt['Description'] ?? '')),
-        'quantity' => $qty,
-        'document' => trim((string) ($receipt['Document_No'] ?? '')),
-    ];
-}
-
-usort($inboundRows, function (array $a, array $b): int {
-    return $b['date'] <=> $a['date'];
-});
-$inboundRows = array_slice($inboundRows, 0, 25);
-
-uksort($omzetPerProductgroep, function (string $a, string $b) use ($omzetPerProductgroep): int {
-    return ($omzetPerProductgroep[$b]['jaar'] ?? 0) <=> ($omzetPerProductgroep[$a]['jaar'] ?? 0);
-});
-
-$periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
 ?>
 <!doctype html>
 <html lang="nl">
@@ -521,6 +49,65 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             max-width: 1360px;
             margin: 0 auto;
             padding: 20px;
+            position: relative;
+        }
+
+        .cache-widget {
+            position: absolute;
+            top: 8px;
+            right: 20px;
+            background: #fff;
+            border: 1px solid #d7dfeb;
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 11px;
+            color: #4f6077;
+            line-height: 1.2;
+            min-width: 145px;
+            text-align: right;
+            z-index: 10;
+        }
+
+        .cache-value {
+            font-weight: 700;
+            color: #314257;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .cache-glow-up {
+            animation: cacheGlowUp 700ms ease-out 1;
+        }
+
+        .cache-glow-down {
+            animation: cacheGlowDown 700ms ease-out 1;
+        }
+
+        @keyframes cacheGlowUp {
+            0% {
+                box-shadow: 0 0 0 0 rgba(215, 40, 40, 0.55);
+            }
+
+            35% {
+                box-shadow: 0 0 0 4px rgba(215, 40, 40, 0.25);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(215, 40, 40, 0);
+            }
+        }
+
+        @keyframes cacheGlowDown {
+            0% {
+                box-shadow: 0 0 0 0 rgba(21, 160, 70, 0.55);
+            }
+
+            35% {
+                box-shadow: 0 0 0 4px rgba(21, 160, 70, 0.25);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(21, 160, 70, 0);
+            }
         }
 
         .header {
@@ -555,7 +142,6 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             margin-bottom: 4px;
         }
 
-        input,
         select,
         button {
             width: 100%;
@@ -581,10 +167,14 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             margin-bottom: 14px;
         }
 
-        .card {
+        .card,
+        .table-wrap {
             background: #fff;
             border: 1px solid #d7dfeb;
             border-radius: 10px;
+        }
+
+        .card {
             padding: 12px;
         }
 
@@ -594,21 +184,7 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             color: #314257;
         }
 
-        .metric {
-            display: flex;
-            justify-content: space-between;
-            margin: 6px 0;
-            font-size: 14px;
-        }
-
-        .metric strong {
-            font-variant-numeric: tabular-nums;
-        }
-
         .table-wrap {
-            background: #fff;
-            border: 1px solid #d7dfeb;
-            border-radius: 10px;
             margin-bottom: 14px;
             overflow: auto;
         }
@@ -659,13 +235,156 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             color: #5b6d84;
         }
 
+        .inbound-head,
+        .inbound-row,
+        .inbound-tree summary {
+            display: grid;
+            grid-template-columns: minmax(120px, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+            font-size: 13px;
+        }
+
+        .inbound-head>.inbound-values,
+        .inbound-row>.inbound-values,
+        .inbound-tree summary>.inbound-values {
+            grid-column: 2;
+        }
+
+        .inbound-head {
+            color: #4f6077;
+            font-weight: 700;
+            border-bottom: 1px solid #e8eef6;
+            padding-bottom: 6px;
+            margin-bottom: 6px;
+        }
+
+        .inbound-tree {
+            display: grid;
+            gap: 6px;
+            overflow: auto;
+            padding-right: 4px;
+        }
+
+        .inbound-tree details {
+            border: 1px solid #e5ecf6;
+            border-radius: 8px;
+            padding: 6px 8px;
+            background: #fcfdff;
+        }
+
+        .inbound-tree summary {
+            cursor: pointer;
+            list-style: none;
+        }
+
+        .inbound-tree summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .inbound-tree summary::before {
+            content: '▸';
+            margin-right: 6px;
+            color: #5b6d84;
+        }
+
+        .inbound-tree details[open]>summary::before {
+            content: '▾';
+        }
+
+        .inbound-children {
+            margin-top: 6px;
+            display: grid;
+            gap: 6px;
+        }
+
+        .inbound-values {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: end;
+            font-variant-numeric: tabular-nums;
+            text-align: right;
+        }
+
+        .loading-box {
+            min-height: 120px;
+            display: grid;
+            place-items: center;
+            width: 100%;
+        }
+
+        .loading-box.large {
+            min-height: 180px;
+        }
+
+        .spinner {
+            width: 26px;
+            height: 26px;
+            border: 3px solid #d9e3f3;
+            border-top-color: #0f5bb7;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }
+
+        .loading-label {
+            color: #5b6d84;
+            font-size: 12px;
+            margin-top: 10px;
+            text-align: center;
+        }
+
+        .loading-center {
+            display: grid;
+            place-items: center;
+        }
+
+        .card-glow {
+            animation: cardGlowFade 850ms ease-out 1;
+        }
+
+        @keyframes cardGlowFade {
+            0% {
+                box-shadow: 0 0 0 0 rgba(15, 91, 183, 0.55);
+            }
+
+            25% {
+                box-shadow: 0 0 0 4px rgba(15, 91, 183, 0.28);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(15, 91, 183, 0);
+            }
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         @media (max-width: 980px) {
-            .filters {
+
+            .filters,
+            .grid {
                 grid-template-columns: 1fr;
             }
 
-            .grid {
-                grid-template-columns: 1fr;
+            .inbound-head,
+            .inbound-row,
+            .inbound-tree summary {
+                grid-template-columns: minmax(110px, 1fr);
+            }
+
+            .inbound-values {
+                justify-content: start;
+                text-align: left;
+            }
+
+            .cache-widget {
+                position: static;
+                margin-bottom: 10px;
+                width: fit-content;
             }
         }
     </style>
@@ -673,13 +392,18 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
 
 <body>
     <div class="wrap">
-        <div class="header">
-            <h1>Omzet Dashboard</h1>
-            <p class="sub">Omzet, offerte-score, order intake, levertijd, top 10 producten en inbound
-                (week/maand/jaar).</p>
+        <div class="cache-widget" id="cacheWidget">
+            <span>Cache:</span>
+            <span class="cache-value" id="cacheBytes">0 bytes</span>
         </div>
 
-        <form method="get" class="filters">
+        <div class="header">
+            <h1>Omzet Dashboard</h1>
+            <p class="sub">Omzet, offerte-score, order intake, levertijd, top 10 producten en inbound (week/maand/jaar).
+            </p>
+        </div>
+
+        <form method="get" class="filters" id="dashboardFilters">
             <div>
                 <label for="company">Company</label>
                 <select id="company" name="company">
@@ -692,179 +416,399 @@ $periods = ['week' => 'Week', 'maand' => 'Maand', 'jaar' => 'Jaar'];
             </div>
             <div>
                 <label for="parts_filter">Afdelingscode</label>
-                <select id="parts_filter" name="parts_filter">
-                    <option value="">Alle afdelingen</option>
-                    <?php foreach ($departmentOptions as $departmentCode): ?>
-                        <option value="<?= html($departmentCode) ?>" <?= normalize($departmentCode) === $partsFilter ? 'selected' : '' ?>>
-                            <?= html($departmentCode) ?>
-                        </option>
-                    <?php endforeach; ?>
+                <select id="parts_filter" name="parts_filter" data-selected="<?= html($partsFilter) ?>">
+                    <option value=""><?= $partsFilter === '' ? 'Alle afdelingen' : 'Laden...' ?></option>
+                    <?php if ($partsFilter !== ''): ?>
+                        <option value="<?= html($partsFilter) ?>" selected><?= html($partsFilter) ?></option>
+                    <?php endif; ?>
                 </select>
             </div>
             <div>
                 <label for="vendor_filter">Vendor</label>
-                <select id="vendor_filter" name="vendor_filter">
-                    <option value="">Alle vendors</option>
-                    <?php foreach ($vendorOptions as $vendorNo => $vendorName): ?>
-                        <?php $label = $vendorNo . ($vendorName !== '' ? ' - ' . $vendorName : ''); ?>
-                        <option value="<?= html((string) $vendorNo) ?>" <?= (string) $vendorNo === $vendorFilter ? 'selected' : '' ?>>
-                            <?= html($label) ?>
-                        </option>
-                    <?php endforeach; ?>
+                <select id="vendor_filter" name="vendor_filter" data-selected="<?= html($vendorFilter) ?>">
+                    <option value=""><?= $vendorFilter === '' ? 'Alle vendors' : 'Laden...' ?></option>
+                    <?php if ($vendorFilter !== ''): ?>
+                        <option value="<?= html($vendorFilter) ?>" selected><?= html($vendorFilter) ?></option>
+                    <?php endif; ?>
                 </select>
             </div>
             <div style="display:flex; align-items:end;">
-                <button type="submit">Vernieuwen</button>
+                <button type="submit" id="refreshButton">Vernieuwen</button>
             </div>
         </form>
 
-        <?php foreach ($errors as $error): ?>
-            <div class="warn">Dataset niet geladen: <?= html($error) ?></div>
-        <?php endforeach; ?>
-
-        <div class="grid">
-            <div class="card">
-                <h3>Omzet Parts</h3>
-                <?php foreach ($periods as $k => $label): ?>
-                    <div class="metric">
-                        <span><?= html($label) ?></span><strong><?= html(fmt_money(period_value($omzetParts, $k))) ?></strong>
+        <div id="dashboardContent" aria-busy="true">
+            <div class="grid">
+                <div class="card" id="sec-card-omzet">
+                    <div class="loading-box">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
-                <?php endforeach; ?>
-            </div>
-            <div class="card">
-                <h3>Order intake</h3>
-                <?php foreach ($periods as $k => $label): ?>
-                    <div class="metric">
-                        <span><?= html($label) ?></span><strong><?= html(fmt_money(period_value($orderIntake, $k))) ?></strong>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-            <div class="card">
-                <h3>Gemiddelde levertijd (dagen)</h3>
-                <?php foreach ($periods as $k => $label): ?>
-                    <div class="metric">
-                        <span><?= html($label) ?></span><strong><?= html(fmt_number($leadTimeAvg[$k] ?? 0, 1)) ?></strong>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-
-        <div class="table-wrap">
-            <div class="table-title">Offerte score</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Periode</th>
-                        <th class="right"># Offertes</th>
-                        <th class="right"># Gewonnen</th>
-                        <th class="right">Score</th>
-                        <th class="right">Offertewaarde</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($periods as $k => $label): ?>
-                        <?php $qs = $quoteStats[$k]; ?>
-                        <tr>
-                            <td><?= html($label) ?></td>
-                            <td class="right"><?= html((string) $qs['total']) ?></td>
-                            <td class="right"><?= html((string) $qs['gewonnen']) ?></td>
-                            <td class="right">
-                                <?= html(fmt_number(pct((float) $qs['gewonnen'], (float) $qs['total']), 1)) ?>%
-                            </td>
-                            <td class="right"><?= html(fmt_money((float) $qs['waarde'])) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-
-        <div class="table-wrap">
-            <div class="table-title">Omzet per productgroep (week/maand/jaar)</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Productgroep</th>
-                        <th class="right">Week</th>
-                        <th class="right">Maand</th>
-                        <th class="right">Jaar</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($omzetPerProductgroep as $group => $vals): ?>
-                        <tr>
-                            <td><?= html($group) ?></td>
-                            <td class="right"><?= html(fmt_money((float) $vals['week'])) ?></td>
-                            <td class="right"><?= html(fmt_money((float) $vals['maand'])) ?></td>
-                            <td class="right"><?= html(fmt_money((float) $vals['jaar'])) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-
-        <div class="grid">
-            <?php foreach ($periods as $k => $label): ?>
-                <div class="table-wrap" style="margin:0;">
-                    <div class="table-title">Top 10 verkochte producten - <?= html($label) ?></div>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Product</th>
-                                <th class="right">Aantal</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach (($soldByItem[$k] ?? []) as $item => $qty): ?>
-                                <tr>
-                                    <td><?= html((string) $item) ?></td>
-                                    <td class="right"><?= html(fmt_number((float) $qty, 2)) ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
                 </div>
-            <?php endforeach; ?>
-        </div>
-
-        <div class="grid" style="margin-top:14px;">
-            <div class="card">
-                <h3>Inbound (aantal)</h3>
-                <?php foreach ($periods as $k => $label): ?>
-                    <div class="metric">
-                        <span><?= html($label) ?></span><strong><?= html(fmt_number((float) $inboundPerkins[$k], 2)) ?></strong>
+                <div class="card" id="sec-card-order-intake">
+                    <div class="loading-box">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
-                <?php endforeach; ?>
+                </div>
+                <div class="card" id="sec-card-lead-time">
+                    <div class="loading-box">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
             </div>
-            <div class="table-wrap" style="grid-column: span 2; margin:0;">
-                <div class="table-title">Laatste inbound regels</div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Datum</th>
-                            <th>Document</th>
-                            <th>Vendor</th>
-                            <th>Item</th>
-                            <th>Omschrijving</th>
-                            <th class="right">Aantal</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($inboundRows as $row): ?>
-                            <tr>
-                                <td><?= html($row['date']->format('Y-m-d')) ?></td>
-                                <td><?= html((string) $row['document']) ?></td>
-                                <td><?= html((string) $row['vendor']) ?></td>
-                                <td><?= html((string) $row['item']) ?></td>
-                                <td><?= html((string) $row['description']) ?></td>
-                                <td class="right"><?= html(fmt_number((float) $row['quantity'], 2)) ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+
+            <div class="table-wrap" id="sec-table-quote-score">
+                <div class="loading-box large">
+                    <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                </div>
+            </div>
+            <div class="table-wrap" id="sec-table-omzet-productgroep">
+                <div class="loading-box large">
+                    <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                </div>
+            </div>
+
+            <div class="grid">
+                <div class="table-wrap" style="margin:0;" id="sec-top-week">
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin:0;" id="sec-top-maand">
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin:0;" id="sec-top-jaar">
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid" style="margin-top:14px;">
+                <div class="card" id="sec-inbound-totals">
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+                <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-latest">
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
             </div>
         </div>
-        </p>
     </div>
+
+    <script>
+        (function ()
+        {
+            const contentEl = document.getElementById('dashboardContent');
+            const formEl = document.getElementById('dashboardFilters');
+            const refreshButton = document.getElementById('refreshButton');
+            const partsSelect = document.getElementById('parts_filter');
+            const vendorSelect = document.getElementById('vendor_filter');
+            const companySelect = document.getElementById('company');
+            const cacheWidgetEl = document.getElementById('cacheWidget');
+            const cacheBytesEl = document.getElementById('cacheBytes');
+            let lastCacheBytes = null;
+            let displayedCacheBytes = 0;
+            let cacheTargetBytes = 0;
+            let cacheAnimFrameId = null;
+
+            const sectionConfigs = [
+                { id: 'sec-card-omzet', section: 'card_omzet_parts', large: false },
+                { id: 'sec-card-order-intake', section: 'card_order_intake', large: false },
+                { id: 'sec-card-lead-time', section: 'card_lead_time', large: false },
+                { id: 'sec-table-quote-score', section: 'table_quote_score', large: true },
+                { id: 'sec-table-omzet-productgroep', section: 'table_omzet_productgroep', large: true },
+                { id: 'sec-top-week', section: 'table_top_products', period: 'week', large: true },
+                { id: 'sec-top-maand', section: 'table_top_products', period: 'maand', large: true },
+                { id: 'sec-top-jaar', section: 'table_top_products', period: 'jaar', large: true },
+                { id: 'sec-inbound-totals', section: 'inbound_totals', large: true },
+                { id: 'sec-inbound-latest', section: 'inbound_latest', large: true },
+            ];
+
+            function loadingMarkup (large)
+            {
+                return '<div class="loading-box' + (large ? ' large' : '') + '"><div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div></div>';
+            }
+
+            function escapeHtml (value)
+            {
+                return String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/\"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+
+            function setLoadingState (isLoading)
+            {
+                contentEl.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+                refreshButton.disabled = isLoading;
+            }
+
+            function showSectionLoading (target, large)
+            {
+                target.innerHTML = loadingMarkup(large);
+            }
+
+            function populateDepartmentOptions (options)
+            {
+                const selected = partsSelect.dataset.selected || '';
+                let html = '<option value="">Alle afdelingen</option>';
+                for (const option of options)
+                {
+                    const isSelected = String(option.value).toUpperCase() === String(selected).toUpperCase();
+                    html += '<option value="' + escapeHtml(option.value) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(option.value) + '</option>';
+                }
+                partsSelect.innerHTML = html;
+            }
+
+            function populateVendorOptions (options)
+            {
+                const selected = vendorSelect.dataset.selected || '';
+                let html = '<option value="">Alle vendors</option>';
+                for (const option of options)
+                {
+                    const isSelected = String(option.value) === String(selected);
+                    html += '<option value="' + escapeHtml(option.value) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(option.label) + '</option>';
+                }
+                vendorSelect.innerHTML = html;
+            }
+
+            function renderError (target, message)
+            {
+                target.innerHTML = '<div class="warn">Data laden mislukt: ' + escapeHtml(message) + '</div>';
+            }
+
+            function highlightLoadedCard (target)
+            {
+                target.classList.remove('card-glow');
+                void target.offsetWidth;
+                target.classList.add('card-glow');
+            }
+
+            function buildRequestParams (extraParams = {})
+            {
+                const formData = new FormData(formEl);
+                const params = new URLSearchParams(formData);
+                params.set('company', companySelect.value || '');
+                for (const [k, v] of Object.entries(extraParams))
+                {
+                    params.set(k, String(v));
+                }
+                return params;
+            }
+
+            async function loadFilterOptions ()
+            {
+                const params = buildRequestParams({ section: 'filter_options' });
+                const response = await fetch('dashboard_data.php?' + params.toString(), {
+                    headers: { 'Accept': 'application/json' },
+                    credentials: 'same-origin'
+                });
+
+                if (!response.ok)
+                {
+                    throw new Error('HTTP ' + response.status + ' (filters)');
+                }
+
+                const payload = await response.json();
+                if (Array.isArray(payload.departmentOptions))
+                {
+                    populateDepartmentOptions(payload.departmentOptions);
+                }
+                if (Array.isArray(payload.vendorOptions))
+                {
+                    populateVendorOptions(payload.vendorOptions);
+                }
+            }
+
+            async function loadSection (config)
+            {
+                const target = document.getElementById(config.id);
+                if (!target)
+                {
+                    return;
+                }
+
+                showSectionLoading(target, Boolean(config.large));
+                const params = buildRequestParams({ section: config.section });
+                if (config.period)
+                {
+                    params.set('period', config.period);
+                }
+
+                try
+                {
+                    const response = await fetch('dashboard_data.php?' + params.toString(), {
+                        headers: { 'Accept': 'application/json' },
+                        credentials: 'same-origin'
+                    });
+
+                    if (!response.ok)
+                    {
+                        throw new Error('HTTP ' + response.status);
+                    }
+
+                    const payload = await response.json();
+                    if (!payload || typeof payload.html !== 'string')
+                    {
+                        throw new Error('Ongeldig antwoordformaat');
+                    }
+
+                    target.innerHTML = payload.html;
+                    highlightLoadedCard(target);
+                } catch (error)
+                {
+                    renderError(target, error instanceof Error ? error.message : String(error));
+                }
+            }
+
+            async function loadDashboard (pushState = false)
+            {
+                setLoadingState(true);
+                const params = buildRequestParams();
+
+                partsSelect.dataset.selected = partsSelect.value;
+                vendorSelect.dataset.selected = vendorSelect.value;
+
+                if (pushState)
+                {
+                    history.pushState({}, '', '?' + params.toString());
+                }
+
+                try
+                {
+                    const sectionsPromise = Promise.all(sectionConfigs.map(loadSection));
+
+                    const filtersPromise = loadFilterOptions().catch(function (error)
+                    {
+                        console.warn('Filteropties laden mislukt', error);
+                    });
+
+                    await Promise.all([sectionsPromise, filtersPromise]);
+                } catch (error)
+                {
+                    const message = error instanceof Error ? error.message : String(error);
+                    for (const config of sectionConfigs)
+                    {
+                        const target = document.getElementById(config.id);
+                        if (target)
+                        {
+                            renderError(target, message);
+                        }
+                    }
+                } finally
+                {
+                    setLoadingState(false);
+                }
+            }
+
+            formEl.addEventListener('submit', function (event)
+            {
+                event.preventDefault();
+                loadDashboard(true);
+            });
+
+            window.addEventListener('popstate', function ()
+            {
+                const params = new URLSearchParams(window.location.search);
+                companySelect.value = params.get('company') || companySelect.value;
+                partsSelect.dataset.selected = params.get('parts_filter') || '';
+                vendorSelect.dataset.selected = params.get('vendor_filter') || '';
+                loadDashboard(false);
+            });
+
+            function setCacheGlow (className)
+            {
+                cacheWidgetEl.classList.remove('cache-glow-up', 'cache-glow-down');
+                void cacheWidgetEl.offsetWidth;
+                cacheWidgetEl.classList.add(className);
+            }
+
+            function renderCacheBytes (value)
+            {
+                const rounded = Math.max(0, Math.round(value));
+                cacheBytesEl.textContent = rounded.toLocaleString('nl-NL') + ' bytes';
+            }
+
+            function animateCacheBytes ()
+            {
+                const delta = cacheTargetBytes - displayedCacheBytes;
+                if (Math.abs(delta) < 0.5)
+                {
+                    displayedCacheBytes = cacheTargetBytes;
+                    renderCacheBytes(displayedCacheBytes);
+                    cacheAnimFrameId = null;
+                    return;
+                }
+
+                displayedCacheBytes += delta * 0.18;
+                renderCacheBytes(displayedCacheBytes);
+                cacheAnimFrameId = requestAnimationFrame(animateCacheBytes);
+            }
+
+            function setCacheTarget (bytes)
+            {
+                cacheTargetBytes = Math.max(0, bytes);
+
+                if (cacheAnimFrameId === null)
+                {
+                    cacheAnimFrameId = requestAnimationFrame(animateCacheBytes);
+                }
+            }
+
+            async function updateCacheWidget ()
+            {
+                try
+                {
+                    const response = await fetch('cache_status.php?_t=' + Date.now(), {
+                        headers: { 'Accept': 'application/json' },
+                        credentials: 'same-origin',
+                        cache: 'no-store',
+                        priority: 'high'
+                    });
+
+                    if (!response.ok)
+                    {
+                        return;
+                    }
+
+                    const payload = await response.json();
+                    const bytes = Number(payload.bytes || 0);
+                    setCacheTarget(bytes);
+
+                    if (lastCacheBytes !== null)
+                    {
+                        if (bytes > lastCacheBytes)
+                        {
+                            setCacheGlow('cache-glow-up');
+                        } else if (bytes < lastCacheBytes)
+                        {
+                            setCacheGlow('cache-glow-down');
+                        }
+                    }
+
+                    lastCacheBytes = bytes;
+                } catch (error)
+                {
+                    console.warn('Cache-status laden mislukt', error);
+                }
+            }
+
+            updateCacheWidget();
+            setTimeout(updateCacheWidget, 150);
+            setTimeout(function ()
+            {
+                loadDashboard(false);
+            }, 0);
+            setInterval(updateCacheWidget, 1000);
+        })();
+    </script>
 </body>
 
 </html>
