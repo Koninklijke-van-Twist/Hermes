@@ -238,8 +238,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         .inbound-head,
         .inbound-row,
         .inbound-tree summary {
-            display: grid;
-            grid-template-columns: minmax(120px, 1fr) auto;
+            grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
             gap: 8px;
             align-items: center;
             font-size: 13px;
@@ -273,6 +272,23 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             background: #fcfdff;
         }
 
+        .inbound-tree details.inbound-level-year[open] {
+            background: #eef4ff;
+            border-color: #cfdef6;
+        }
+
+        .inbound-tree details.inbound-level-month[open] {
+            background: #f5f8ff;
+            border-color: #d9e5f7;
+        }
+
+        .inbound-tree details.inbound-level-month[open] .inbound-row {
+            background: #fafcff;
+            border: 1px solid #e6edf8;
+            border-radius: 6px;
+            padding: 6px 8px;
+        }
+
         .inbound-tree summary {
             cursor: pointer;
             list-style: none;
@@ -299,12 +315,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         }
 
         .inbound-values {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            justify-content: end;
+            display: block;
             font-variant-numeric: tabular-nums;
             text-align: right;
+            white-space: nowrap;
         }
 
         .loading-box {
@@ -373,12 +387,11 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             .inbound-head,
             .inbound-row,
             .inbound-tree summary {
-                grid-template-columns: minmax(110px, 1fr);
+                grid-template-columns: minmax(0, 1fr) minmax(100px, auto);
             }
 
             .inbound-values {
-                justify-content: start;
-                text-align: left;
+                text-align: right;
             }
 
             .cache-widget {

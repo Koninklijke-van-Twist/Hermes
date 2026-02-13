@@ -154,6 +154,37 @@ function fmt_number(float $value, int $decimals = 0): string
     return number_format($value, $decimals, ',', '.');
 }
 
+function nl_month_name(int $month): string
+{
+    $months = [
+        1 => 'januari',
+        2 => 'februari',
+        3 => 'maart',
+        4 => 'april',
+        5 => 'mei',
+        6 => 'juni',
+        7 => 'juli',
+        8 => 'augustus',
+        9 => 'september',
+        10 => 'oktober',
+        11 => 'november',
+        12 => 'december',
+    ];
+
+    return $months[$month] ?? (string) $month;
+}
+
+function nl_month_year_label(DateTimeImmutable $date): string
+{
+    return nl_month_name((int) $date->format('n')) . ' ' . $date->format('Y');
+}
+
+function nl_week_label(DateTimeImmutable $weekStartDate): string
+{
+    $weekEndDate = $weekStartDate->modify('sunday this week');
+    return 'Week ' . $weekStartDate->format('W') . ' (' . $weekStartDate->format('d-m') . ' t/m ' . $weekEndDate->format('d-m') . ')';
+}
+
 function parse_numeric_value($value): ?float
 {
     if (is_int($value) || is_float($value)) {
@@ -715,14 +746,16 @@ if ($section === 'table_omzet_productgroep') {
         $selectedCompany,
         'ValueEntries',
         [
-            '$select' => 'Posting_Date,Gen_Prod_Posting_Group,Sales_Amount_Actual,AuxiliaryIndex1',
+            '$select' => 'Posting_Date,Item_No,Item_Description,Sales_Amount_Actual,AuxiliaryIndex1',
             '$filter' => "Posting_Date ge $fromDate",
         ],
         $auth,
         $errors
     );
 
-    $omzetPerProductgroep = [];
+    $omzetPerProduct = [];
+    $currentYearKey = $today->format('Y');
+
     foreach ($valueEntries as $row) {
         if (!matches_code_filter($row, ['AuxiliaryIndex1'], $partsFilter)) {
             continue;
@@ -734,45 +767,132 @@ if ($section === 'table_omzet_productgroep') {
         }
 
         $salesAmount = as_float($row['Sales_Amount_Actual'] ?? 0);
-        $productgroep = trim((string) ($row['Gen_Prod_Posting_Group'] ?? 'Onbekend'));
-        if ($productgroep === '') {
-            $productgroep = 'Onbekend';
+        $itemNo = trim((string) ($row['Item_No'] ?? ''));
+        $itemDesc = trim((string) ($row['Item_Description'] ?? ''));
+        if ($itemNo === '') {
+            continue;
         }
 
-        if (!isset($omzetPerProductgroep[$productgroep])) {
-            $omzetPerProductgroep[$productgroep] = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
+        $itemLabel = $itemNo . ($itemDesc !== '' ? ' - ' . $itemDesc : '');
+        $yearKey = $postingDate->format('Y');
+        $monthKey = $postingDate->format('Y-m');
+        $weekStartDate = $postingDate->modify('monday this week');
+        $weekKey = $weekStartDate->format('Y-m-d');
+
+        if (!isset($omzetPerProduct[$itemLabel])) {
+            $omzetPerProduct[$itemLabel] = [
+                'label' => $itemLabel,
+                'currentYearTotal' => 0.0,
+                'years' => [],
+            ];
         }
 
-        push_period_total($omzetPerProductgroep[$productgroep], $postingDate, $salesAmount, $weekStart, $monthStart, $yearStart, $today);
+        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey])) {
+            $omzetPerProduct[$itemLabel]['years'][$yearKey] = [
+                'label' => $yearKey,
+                'total' => 0.0,
+                'months' => [],
+            ];
+        }
+
+        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey])) {
+            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey] = [
+                'label' => nl_month_year_label($postingDate),
+                'total' => 0.0,
+                'weeks' => [],
+            ];
+        }
+
+        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
+            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
+                'label' => nl_week_label($weekStartDate),
+                'total' => 0.0,
+            ];
+        }
+
+        $omzetPerProduct[$itemLabel]['years'][$yearKey]['total'] += $salesAmount;
+        $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['total'] += $salesAmount;
+        $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['total'] += $salesAmount;
+
+        if ($yearKey === $currentYearKey) {
+            $omzetPerProduct[$itemLabel]['currentYearTotal'] += $salesAmount;
+        }
     }
 
-    uksort($omzetPerProductgroep, function (string $a, string $b) use ($omzetPerProductgroep): int {
-        return ($omzetPerProductgroep[$b]['jaar'] ?? 0) <=> ($omzetPerProductgroep[$a]['jaar'] ?? 0);
+    foreach ($omzetPerProduct as &$productData) {
+        krsort($productData['years'], SORT_NATURAL);
+        foreach ($productData['years'] as &$yearData) {
+            krsort($yearData['months'], SORT_NATURAL);
+            foreach ($yearData['months'] as &$monthData) {
+                krsort($monthData['weeks'], SORT_NATURAL);
+            }
+            unset($monthData);
+        }
+        unset($yearData);
+    }
+    unset($productData);
+
+    uksort($omzetPerProduct, function (string $a, string $b) use ($omzetPerProduct): int {
+        return ($omzetPerProduct[$b]['currentYearTotal'] ?? 0) <=> ($omzetPerProduct[$a]['currentYearTotal'] ?? 0);
     });
 
     ob_start();
     ?>
-    <div class="table-title">Omzet per productgroep (week/maand/jaar)</div>
-    <table>
-        <thead>
-            <tr>
-                <th>Productgroep</th>
-                <th class="right">Week</th>
-                <th class="right">Maand</th>
-                <th class="right">Jaar</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($omzetPerProductgroep as $group => $vals): ?>
-                <tr>
-                    <td><?= html($group) ?></td>
-                    <td class="right"><?= html(fmt_money((float) $vals['week'])) ?></td>
-                    <td class="right"><?= html(fmt_money((float) $vals['maand'])) ?></td>
-                    <td class="right"><?= html(fmt_money((float) $vals['jaar'])) ?></td>
-                </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
+    <div class="table-title">Omzet per product</div>
+    <?php if (empty($omzetPerProduct)): ?>
+        <div class="small" style="padding:10px 12px;">Geen omzetdata beschikbaar.</div>
+    <?php else: ?>
+        <div style="padding:10px 12px;">
+            <div class="inbound-head">
+                <span>Product</span>
+                <span class="inbound-values"><strong>Omzet dit jaar</strong></span>
+            </div>
+            <div class="inbound-tree">
+                <?php foreach ($omzetPerProduct as $productData): ?>
+                    <details class="inbound-level-year">
+                        <summary>
+                            <span><?= html((string) $productData['label']) ?></span>
+                            <span class="inbound-values">
+                                <strong><?= html(fmt_money((float) ($productData['currentYearTotal'] ?? 0.0))) ?></strong>
+                            </span>
+                        </summary>
+                        <div class="inbound-children">
+                            <?php foreach ($productData['years'] as $yearData): ?>
+                                <details class="inbound-level-year">
+                                    <summary>
+                                        <span><?= html((string) $yearData['label']) ?></span><span class="inbound-values"><strong><?= html(fmt_money((float) ($yearData['total'] ?? 0.0))) ?></strong>
+                                        </span>
+                                    </summary>
+                                    <div class="inbound-children">
+                                        <?php foreach ($yearData['months'] as $monthData): ?>
+                                            <details class="inbound-level-month">
+                                                <summary>
+                                                    <span><?= html((string) $monthData['label']) ?></span>
+                                                    <span class="inbound-values">
+                                                        <strong><?= html(fmt_money((float) ($monthData['total'] ?? 0.0))) ?></strong>
+                                                    </span>
+                                                </summary>
+                                                <div class="inbound-children">
+                                                    <?php foreach ($monthData['weeks'] as $weekData): ?>
+                                                        <div class="inbound-row">
+                                                            <span><?= html((string) $weekData['label']) ?></span>
+                                                            <span class="inbound-values">
+                                                                <strong><?= html(fmt_money((float) ($weekData['total'] ?? 0.0))) ?></strong>
+                                                            </span>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            </details>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </details>
+                            <?php endforeach; ?>
+                        </div>
+                    </details>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
@@ -920,16 +1040,15 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
 
             if (!isset($inboundSummary[$yearKey]['months'][$monthKey])) {
                 $inboundSummary[$yearKey]['months'][$monthKey] = [
-                    'label' => $receiptDate->format('F Y'),
+                    'label' => nl_month_year_label($receiptDate),
                     'totalProfit' => 0.0,
                     'weeks' => [],
                 ];
             }
 
             if (!isset($inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
-                $weekEndDate = $weekStartDate->modify('sunday this week');
                 $inboundSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
-                    'label' => 'Week ' . $weekStartDate->format('W') . ' (' . $weekStartDate->format('d-m') . ' t/m ' . $weekEndDate->format('d-m') . ')',
+                    'label' => nl_week_label($weekStartDate),
                     'totalProfit' => 0.0,
                 ];
             }
@@ -1010,7 +1129,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         </div>
         <div class="inbound-tree">
             <?php foreach ($inboundSummary as $yearData): ?>
-                <details open>
+                <details class="inbound-level-year">
                     <summary>
                         <span><?= html((string) $yearData['label']) ?></span>
                         <span class="inbound-values">
@@ -1019,7 +1138,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
                     </summary>
                     <div class="inbound-children">
                         <?php foreach ($yearData['months'] as $monthData): ?>
-                            <details>
+                            <details class="inbound-level-month">
                                 <summary>
                                     <span><?= html((string) $monthData['label']) ?></span>
                                     <span class="inbound-values">
