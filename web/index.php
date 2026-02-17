@@ -251,6 +251,24 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             margin-bottom: 10px;
         }
 
+        .warn-refresh {
+            margin-top: 8px;
+            width: auto;
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            border: 1px solid #d4a860;
+            background: #f2b450;
+            color: #3f2a08;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .warn-refresh:disabled {
+            opacity: 0.65;
+            cursor: default;
+        }
+
         .small {
             font-size: 12px;
             color: #5b6d84;
@@ -677,9 +695,31 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
             }
 
-            function renderError (target, message)
+            function renderError (target, message, config = null)
             {
-                target.innerHTML = '<div class="warn">Data laden mislukt: ' + escapeHtml(message) + '</div>';
+                const retryMarkup = config
+                    ? '<div><button type="button" class="warn-refresh">Opnieuw laden</button></div>'
+                    : '';
+
+                target.innerHTML = '<div class="warn">Data laden mislukt: ' + escapeHtml(message) + retryMarkup + '</div>';
+
+                if (!config)
+                {
+                    return;
+                }
+
+                const retryButton = target.querySelector('.warn-refresh');
+                if (!retryButton)
+                {
+                    return;
+                }
+
+                retryButton.addEventListener('click', async function ()
+                {
+                    retryButton.disabled = true;
+                    retryButton.textContent = 'Laden...';
+                    await loadSection(config);
+                });
             }
 
             function highlightLoadedCard (target)
@@ -772,7 +812,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     highlightLoadedCard(target);
                 } catch (error)
                 {
-                    renderError(target, error instanceof Error ? error.message : String(error));
+                    renderError(target, error instanceof Error ? error.message : String(error), config);
                 }
             }
 
@@ -810,7 +850,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                         const target = document.getElementById(config.id);
                         if (target)
                         {
-                            renderError(target, message);
+                            renderError(target, message, config);
                         }
                     }
                 } finally

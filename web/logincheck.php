@@ -1,4 +1,5 @@
 <?php
+require __DIR__ . "/auth.php";
 function is_localhost(): bool
 {
     $host = $_SERVER['HTTP_HOST'] ?? '';
