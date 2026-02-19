@@ -375,6 +375,32 @@ function avg_values(array $values): float
     return array_sum($values) / count($values);
 }
 
+function contextual_avg_label(string $level, string $selectedYear, string $selectedMonth, array $monthLabels): string
+{
+    if ($level === 'month') {
+        if ($selectedYear !== 'avg') {
+            return 'Gemiddeld ' . $selectedYear;
+        }
+
+        return 'Gemiddeld';
+    }
+
+    if ($level === 'week') {
+        if ($selectedMonth !== 'avg') {
+            $monthLabel = (string) ($monthLabels[$selectedMonth] ?? $selectedMonth);
+            return 'Gemiddelde ' . $monthLabel;
+        }
+
+        if ($selectedYear !== 'avg') {
+            return 'Gemiddeld ' . $selectedYear;
+        }
+
+        return 'Gemiddeld';
+    }
+
+    return 'Gemiddeld';
+}
+
 function render_select_options(array $options, string $selected): string
 {
     $html = '';
@@ -420,7 +446,7 @@ function period_selection_result(
         $selectedYear = $selectedYearInput;
     }
 
-    $monthOptions = [['value' => 'avg', 'label' => 'Gemiddeld']];
+    $monthOptions = [['value' => 'avg', 'label' => contextual_avg_label('month', $selectedYear, 'avg', $monthLabels)]];
     $monthEnabled = false;
     if ($selectedYear !== 'avg' && isset($monthsByYear[$selectedYear])) {
         $monthEnabled = true;
@@ -437,7 +463,7 @@ function period_selection_result(
         $selectedMonth = $selectedMonthInput;
     }
 
-    $weekOptions = [['value' => 'avg', 'label' => 'Gemiddeld']];
+    $weekOptions = [['value' => 'avg', 'label' => contextual_avg_label('week', $selectedYear, $selectedMonth, $monthLabels)]];
     $weekEnabled = false;
     if ($selectedMonth !== 'avg' && isset($weekValuesByMonth[$selectedMonth])) {
         $weekEnabled = true;
