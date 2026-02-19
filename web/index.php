@@ -466,6 +466,23 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             min-height: 180px;
         }
 
+        .section-loading-overlay {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(255, 255, 255, 0.55);
+            border-radius: inherit;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .section-loading-overlay .spinner {
+            width: 24px;
+            height: 24px;
+            border-width: 3px;
+        }
+
         .spinner {
             width: 26px;
             height: 26px;
@@ -676,7 +693,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
     <script>
         (function ()
         {
-            const urlParamsInit = new URLSearchParams(window.location.search);
             const contentEl = document.getElementById('dashboardContent');
             const formEl = document.getElementById('dashboardFilters');
             const departmentSelect = document.getElementById('department_filter');
@@ -688,10 +704,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             let displayedCacheBytes = 0;
             let cacheTargetBytes = 0;
             let cacheAnimFrameId = null;
-            const periodState = {
-                selected_year: urlParamsInit.get('selected_year') || 'avg',
-                selected_month: urlParamsInit.get('selected_month') || 'avg',
-                selected_week: urlParamsInit.get('selected_week') || 'avg'
+            const defaultKpiPeriodState = {
+                selected_year: 'avg',
+                selected_month: 'avg',
+                selected_week: 'avg'
+            };
+            const kpiPeriodStateBySection = {
+                card_omzet_parts: { ...defaultKpiPeriodState },
+                card_order_intake: { ...defaultKpiPeriodState },
+                card_lead_time: { ...defaultKpiPeriodState }
             };
 
             const sectionConfigs = [
@@ -713,6 +734,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             {
                 return config.section === 'card_omzet_parts' || config.section === 'card_order_intake' || config.section === 'card_lead_time';
             });
+            const sectionConfigById = sectionConfigs.reduce(function (acc, config)
+            {
+                acc[config.id] = config;
+                return acc;
+            }, {});
+            const kpiSectionSet = new Set(kpiSectionConfigs.map(function (config)
+            {
+                return config.section;
+            }));
 
             function loadingMarkup (large)
             {
@@ -736,7 +766,33 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
             function showSectionLoading (target, large)
             {
-                target.innerHTML = loadingMarkup(large);
+                const alreadyLoaded = target.dataset.loaded === '1';
+                if (!alreadyLoaded)
+                {
+                    target.innerHTML = loadingMarkup(large);
+                    return;
+                }
+
+                target.style.position = target.style.position || 'relative';
+                const existingOverlay = target.querySelector('.section-loading-overlay');
+                if (existingOverlay)
+                {
+                    return;
+                }
+
+                const overlay = document.createElement('div');
+                overlay.className = 'section-loading-overlay';
+                overlay.innerHTML = '<div class="loading-center"><div class="spinner"></div></div>';
+                target.appendChild(overlay);
+            }
+
+            function hideSectionLoadingOverlay (target)
+            {
+                const overlay = target.querySelector('.section-loading-overlay');
+                if (overlay)
+                {
+                    overlay.remove();
+                }
             }
 
             function populateDepartmentOptions (options)
@@ -809,15 +865,18 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 glowTarget.classList.add('card-glow');
             }
 
-            function buildRequestParams (extraParams = {})
+            function buildRequestParams (extraParams = {}, sectionName = '')
             {
                 const formData = new FormData(formEl);
                 const params = new URLSearchParams(formData);
                 params.set('company', companySelect.value || '');
                 params.set('vendor_filter', inboundVendorSelect ? (inboundVendorSelect.value || '') : '');
-                params.set('selected_year', periodState.selected_year || 'avg');
-                params.set('selected_month', periodState.selected_month || 'avg');
-                params.set('selected_week', periodState.selected_week || 'avg');
+
+                const state = kpiPeriodStateBySection[sectionName] || defaultKpiPeriodState;
+                params.set('selected_year', state.selected_year || 'avg');
+                params.set('selected_month', state.selected_month || 'avg');
+                params.set('selected_week', state.selected_week || 'avg');
+
                 for (const [k, v] of Object.entries(extraParams))
                 {
                     params.set(k, String(v));
@@ -825,33 +884,39 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 return params;
             }
 
-            function syncPeriodStateByLevel (level, value)
+            function syncPeriodStateByLevel (sectionName, level, value)
             {
+                const state = kpiPeriodStateBySection[sectionName];
+                if (!state)
+                {
+                    return;
+                }
+
                 const safeValue = value || 'avg';
                 if (level === 'year')
                 {
-                    periodState.selected_year = safeValue;
-                    periodState.selected_month = 'avg';
-                    periodState.selected_week = 'avg';
+                    state.selected_year = safeValue;
+                    state.selected_month = 'avg';
+                    state.selected_week = 'avg';
                     return;
                 }
 
                 if (level === 'month')
                 {
-                    periodState.selected_month = safeValue;
-                    periodState.selected_week = 'avg';
+                    state.selected_month = safeValue;
+                    state.selected_week = 'avg';
                     return;
                 }
 
                 if (level === 'week')
                 {
-                    periodState.selected_week = safeValue;
+                    state.selected_week = safeValue;
                 }
             }
 
             async function loadFilterOptions ()
             {
-                const params = buildRequestParams({ section: 'filter_options' });
+                const params = buildRequestParams({ section: 'filter_options' }, '');
                 const response = await fetch('dashboard_data.php?' + params.toString(), {
                     headers: { 'Accept': 'application/json' },
                     credentials: 'same-origin'
@@ -882,7 +947,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
 
                 showSectionLoading(target, Boolean(config.large));
-                const params = buildRequestParams({ section: config.section });
+                const params = buildRequestParams({ section: config.section }, config.section);
                 if (config.period)
                 {
                     params.set('period', config.period);
@@ -907,17 +972,21 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     }
 
                     target.innerHTML = payload.html;
+                    target.dataset.loaded = '1';
                     highlightLoadedCard(target);
                 } catch (error)
                 {
                     renderError(target, error instanceof Error ? error.message : String(error), config);
+                } finally
+                {
+                    hideSectionLoadingOverlay(target);
                 }
             }
 
             async function loadDashboard (pushState = false)
             {
                 setLoadingState(true);
-                const params = buildRequestParams();
+                const params = buildRequestParams({}, '');
 
                 departmentSelect.dataset.selected = departmentSelect.value;
                 if (inboundVendorSelect)
@@ -957,17 +1026,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
             }
 
-            async function loadKpiCards (pushState = false)
-            {
-                if (pushState)
-                {
-                    const params = buildRequestParams();
-                    history.pushState({}, '', '?' + params.toString());
-                }
-
-                await Promise.all(kpiSectionConfigs.map(loadSection));
-            }
-
             async function loadInboundOnly (pushState = false)
             {
                 if (inboundVendorSelect)
@@ -977,7 +1035,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
                 if (pushState)
                 {
-                    const params = buildRequestParams();
+                    const params = buildRequestParams({}, '');
                     history.pushState({}, '', '?' + params.toString());
                 }
 
@@ -1014,8 +1072,20 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     return;
                 }
 
-                syncPeriodStateByLevel(level, target.value || 'avg');
-                loadKpiCards(true);
+                const container = target.closest('.card, .table-wrap');
+                if (!container || !container.id)
+                {
+                    return;
+                }
+
+                const config = sectionConfigById[container.id] || null;
+                if (!config || !kpiSectionSet.has(config.section))
+                {
+                    return;
+                }
+
+                syncPeriodStateByLevel(config.section, level, target.value || 'avg');
+                loadSection(config);
             });
 
             window.addEventListener('popstate', function ()
@@ -1027,9 +1097,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 {
                     inboundVendorSelect.dataset.selected = params.get('vendor_filter') || '';
                 }
-                periodState.selected_year = params.get('selected_year') || 'avg';
-                periodState.selected_month = params.get('selected_month') || 'avg';
-                periodState.selected_week = params.get('selected_week') || 'avg';
                 loadDashboard(false);
             });
 
