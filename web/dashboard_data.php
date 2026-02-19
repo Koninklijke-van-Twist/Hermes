@@ -678,6 +678,56 @@ function fetch_item_category_descriptions_long_cache(
     return $descriptionsByCode;
 }
 
+function fetch_customer_names_for_nos(
+    string $environment,
+    string $company,
+    array $customerNos,
+    array $auth,
+    array &$errors
+): array {
+    $customerNos = array_values(array_unique(array_filter(array_map('trim', $customerNos), function (string $value): bool {
+        return $value !== '';
+    })));
+
+    if (empty($customerNos)) {
+        return [];
+    }
+
+    $nameByCustomerNo = [];
+    $chunkSize = 25;
+    $chunks = array_chunk($customerNos, $chunkSize);
+    foreach ($chunks as $chunk) {
+        $clauses = [];
+        foreach ($chunk as $customerNo) {
+            $clauses[] = 'No eq ' . odata_quote_string($customerNo);
+        }
+
+        $filter = implode(' or ', $clauses);
+        $rows = odata_fetch_safe(
+            $environment,
+            $company,
+            'AppCustomerCard',
+            [
+                '$select' => 'No,Name',
+                '$filter' => $filter,
+            ],
+            $auth,
+            $errors
+        );
+
+        foreach ($rows as $row) {
+            $customerNo = trim((string) ($row['No'] ?? ''));
+            if ($customerNo === '') {
+                continue;
+            }
+
+            $nameByCustomerNo[$customerNo] = trim((string) ($row['Name'] ?? ''));
+        }
+    }
+
+    return $nameByCustomerNo;
+}
+
 function render_with_errors(string $html, array $errors): string
 {
     if (empty($errors)) {
@@ -1455,7 +1505,172 @@ if ($section === 'table_top_products') {
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
 
-if ($section === 'inbound_totals' || $section === 'inbound_latest') {
+if ($section === 'table_top_customers') {
+    if (!isset($periods[$period])) {
+        json_response(['error' => 'Ongeldige periode'], 400);
+    }
+
+    $errors = [];
+    $salesLines = odata_fetch_safe(
+        $environment,
+        $selectedCompany,
+        'SalesLines',
+        [
+            '$select' => 'Document_No,Shipment_Date,Type,Quantity,Outstanding_Quantity,Line_Amount,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+            '$filter' => "Shipment_Date ge $fromDate",
+        ],
+        $auth,
+        $errors
+    );
+
+    $customerNos = [];
+    $preparedRows = [];
+
+    foreach ($salesLines as $row) {
+        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+            continue;
+        }
+
+        $lineType = normalize((string) ($row['Type'] ?? ''));
+        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+            continue;
+        }
+
+        $postingDate = parse_bc_date($row['Shipment_Date'] ?? null);
+        if (!$postingDate) {
+            continue;
+        }
+
+        $inCurrentPeriod = false;
+        if ($period === 'jaar') {
+            $inCurrentPeriod = in_period($postingDate, $yearStart, $today);
+        } elseif ($period === 'maand') {
+            $inCurrentPeriod = in_period($postingDate, $monthStart, $today);
+        } else {
+            $inCurrentPeriod = in_period($postingDate, $weekStart, $today);
+        }
+
+        if (!$inCurrentPeriod) {
+            continue;
+        }
+
+        $quantity = as_float($row['Quantity'] ?? 0);
+        $outstandingQty = as_float($row['Outstanding_Quantity'] ?? 0);
+        $qty = $quantity - $outstandingQty;
+        if ($qty < 0.0) {
+            $qty = 0.0;
+        }
+        if ($qty <= 0.0) {
+            continue;
+        }
+
+        $ratio = 1.0;
+        if ($quantity > 0.0) {
+            $ratio = $qty / $quantity;
+            if ($ratio > 1.0) {
+                $ratio = 1.0;
+            }
+        }
+
+        $lineSales = as_float($row['Line_Amount'] ?? 0) * $ratio;
+        $documentNo = trim((string) ($row['Document_No'] ?? ''));
+        $customerNo = trim((string) ($row['Sell_to_Customer_No'] ?? ''));
+        $customerNameHint = trim((string) ($row['Sell_to_Customer_Name'] ?? ''));
+
+        if ($customerNo !== '') {
+            $customerNos[] = $customerNo;
+        }
+
+        $preparedRows[] = [
+            'customerNo' => $customerNo,
+            'customerNameHint' => $customerNameHint,
+            'documentNo' => $documentNo,
+            'qty' => $qty,
+            'lineSales' => $lineSales,
+        ];
+    }
+
+    $customerNameByNo = fetch_customer_names_for_nos(
+        $environment,
+        $selectedCompany,
+        $customerNos,
+        $auth,
+        $errors
+    );
+
+    $soldByCustomer = [];
+    foreach ($preparedRows as $preparedRow) {
+        $customerNo = (string) ($preparedRow['customerNo'] ?? '');
+        $customerNameHint = (string) ($preparedRow['customerNameHint'] ?? '');
+        $documentNo = (string) ($preparedRow['documentNo'] ?? '');
+        $qty = (float) ($preparedRow['qty'] ?? 0.0);
+        $lineSales = (float) ($preparedRow['lineSales'] ?? 0.0);
+
+        $customerName = trim((string) ($customerNameByNo[$customerNo] ?? $customerNameHint));
+
+        if ($customerNo !== '') {
+            $customerLabel = $customerNo . ' - ' . ($customerName !== '' ? $customerName : 'Onbekende klant');
+        } elseif ($customerName !== '') {
+            $customerLabel = $customerName;
+        } else {
+            $customerLabel = 'Onbekende klant';
+        }
+
+        if (!isset($soldByCustomer[$customerLabel])) {
+            $soldByCustomer[$customerLabel] = [
+                'salesCount' => 0,
+                'orderNos' => [],
+                'articles' => 0.0,
+                'value' => 0.0,
+            ];
+        }
+
+        if ($documentNo !== '') {
+            $soldByCustomer[$customerLabel]['orderNos'][$documentNo] = true;
+        }
+        $soldByCustomer[$customerLabel]['articles'] += $qty;
+        $soldByCustomer[$customerLabel]['value'] += $lineSales;
+    }
+
+    foreach ($soldByCustomer as $customerLabel => $stats) {
+        $orderNos = is_array($stats['orderNos'] ?? null) ? $stats['orderNos'] : [];
+        $soldByCustomer[$customerLabel]['salesCount'] = count($orderNos);
+        unset($soldByCustomer[$customerLabel]['orderNos']);
+    }
+
+    uasort($soldByCustomer, function (array $a, array $b): int {
+        return ($b['value'] ?? 0) <=> ($a['value'] ?? 0);
+    });
+    $soldByCustomer = array_slice($soldByCustomer, 0, 10, true);
+
+    ob_start();
+    ?>
+    <div class="table-title">Top 10 klanten - <?= html($periods[$period]) ?></div>
+    <table>
+        <thead>
+            <tr>
+                <th>Klant</th>
+                <th class="right">Verkopen</th>
+                <th class="right">Artikelen</th>
+                <th class="right">Waarde</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php foreach ($soldByCustomer as $customer => $stats): ?>
+                <tr>
+                    <td><?= html((string) $customer) ?></td>
+                    <td class="right"><?= html(fmt_number((float) ($stats['salesCount'] ?? 0), 0)) ?></td>
+                    <td class="right"><?= html(fmt_number((float) ($stats['articles'] ?? 0.0), 0)) ?></td>
+                    <td class="right"><?= html(fmt_money((float) ($stats['value'] ?? 0.0))) ?></td>
+                </tr>
+            <?php endforeach; ?>
+        </tbody>
+    </table>
+    <?php
+    json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
+}
+
+if ($section === 'inbound_totals' || $section === 'inbound_stats' || $section === 'inbound_latest') {
     $errors = [];
     $purchaseOrderLines = odata_fetch_safe(
         $environment,
@@ -1496,6 +1711,8 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
 
     $inboundRows = [];
     $inboundSummary = [];
+    $inboundOrderStats = [];
+    $lineSequence = 0;
 
     foreach ($purchaseOrderLines as $line) {
         $lineType = normalize((string) ($line['Type'] ?? ''));
@@ -1535,11 +1752,28 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         }
 
         $unitPriceValue = $qty != 0.0 ? ($amountValue / $qty) : null;
+        $lineSequence++;
 
         $yearKey = $orderDate->format('Y');
         $monthKey = $orderDate->format('Y-m');
         $weekStartDate = $orderDate->modify('monday this week');
         $weekKey = $weekStartDate->format('Y-m-d');
+
+        $orderKey = $documentNo !== '' ? $documentNo : ('__line_' . $lineSequence);
+        if (!isset($inboundOrderStats[$orderKey])) {
+            $inboundOrderStats[$orderKey] = [
+                'yearKey' => $yearKey,
+                'monthKey' => $monthKey,
+                'weekKey' => $weekKey,
+                'orderDate' => $orderDate,
+                'weekStartDate' => $weekStartDate,
+                'value' => 0.0,
+                'articles' => 0.0,
+            ];
+        }
+
+        $inboundOrderStats[$orderKey]['value'] += $amountValue;
+        $inboundOrderStats[$orderKey]['articles'] += $qty;
 
         if ($amountValue != 0.0) {
             if (!isset($inboundSummary[$yearKey])) {
@@ -1582,43 +1816,175 @@ if ($section === 'inbound_totals' || $section === 'inbound_latest') {
         ];
     }
 
-    if ($section === 'inbound_latest') {
-        usort($inboundRows, function (array $a, array $b): int {
-            return $b['date'] <=> $a['date'];
-        });
-        $inboundRows = array_slice($inboundRows, 0, 25);
+    if ($section === 'inbound_stats' || $section === 'inbound_latest') {
+        $inboundStatsSummary = [];
+
+        foreach ($inboundOrderStats as $orderStats) {
+            $yearKey = (string) ($orderStats['yearKey'] ?? '');
+            $monthKey = (string) ($orderStats['monthKey'] ?? '');
+            $weekKey = (string) ($orderStats['weekKey'] ?? '');
+            $orderDate = $orderStats['orderDate'] ?? null;
+            $weekStartDate = $orderStats['weekStartDate'] ?? null;
+
+            if (!$orderDate instanceof DateTimeImmutable || !$weekStartDate instanceof DateTimeImmutable || $yearKey === '' || $monthKey === '' || $weekKey === '') {
+                continue;
+            }
+
+            if (!isset($inboundStatsSummary[$yearKey])) {
+                $inboundStatsSummary[$yearKey] = [
+                    'label' => $yearKey,
+                    'orders' => 0,
+                    'totalValue' => 0.0,
+                    'articles' => 0.0,
+                    'months' => [],
+                ];
+            }
+
+            if (!isset($inboundStatsSummary[$yearKey]['months'][$monthKey])) {
+                $inboundStatsSummary[$yearKey]['months'][$monthKey] = [
+                    'label' => nl_month_year_label($orderDate),
+                    'orders' => 0,
+                    'totalValue' => 0.0,
+                    'articles' => 0.0,
+                    'weeks' => [],
+                ];
+            }
+
+            if (!isset($inboundStatsSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
+                $inboundStatsSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
+                    'label' => nl_week_label($weekStartDate),
+                    'orders' => 0,
+                    'totalValue' => 0.0,
+                    'articles' => 0.0,
+                ];
+            }
+
+            $value = (float) ($orderStats['value'] ?? 0.0);
+            $articles = (float) ($orderStats['articles'] ?? 0.0);
+
+            $inboundStatsSummary[$yearKey]['orders'] += 1;
+            $inboundStatsSummary[$yearKey]['totalValue'] += $value;
+            $inboundStatsSummary[$yearKey]['articles'] += $articles;
+
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['orders'] += 1;
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['totalValue'] += $value;
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['articles'] += $articles;
+
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey]['orders'] += 1;
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey]['totalValue'] += $value;
+            $inboundStatsSummary[$yearKey]['months'][$monthKey]['weeks'][$weekKey]['articles'] += $articles;
+        }
+
+        krsort($inboundStatsSummary, SORT_NATURAL);
+        foreach ($inboundStatsSummary as &$yearStatsData) {
+            krsort($yearStatsData['months'], SORT_NATURAL);
+            foreach ($yearStatsData['months'] as &$monthStatsData) {
+                krsort($monthStatsData['weeks'], SORT_NATURAL);
+            }
+            unset($monthStatsData);
+        }
+        unset($yearStatsData);
 
         ob_start();
         ?>
-        <div class="table-title">Laatste inbound regels</div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Datum</th>
-                    <th>Document</th>
-                    <th>Vendor</th>
-                    <th>Item</th>
-                    <th>Omschrijving</th>
-                    <th class="right">Aantal</th>
-                    <th class="right">Prijs/stuk</th>
-                    <th class="right">Totaalprijs</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($inboundRows as $row): ?>
-                    <tr>
-                        <td><?= html($row['date']->format('Y-m-d')) ?></td>
-                        <td><?= html((string) $row['document']) ?></td>
-                        <td><?= html((string) $row['vendor']) ?></td>
-                        <td><?= html((string) $row['item']) ?></td>
-                        <td><?= html((string) $row['description']) ?></td>
-                        <td class="right"><?= html(fmt_number((float) $row['quantity'], 2)) ?></td>
-                        <td class="right"><?= $row['unitPrice'] !== null ? html(fmt_money((float) $row['unitPrice'])) : '-' ?></td>
-                        <td class="right"><?= html(fmt_money((float) $row['totalPrice'])) ?></td>
-                    </tr>
+        <?php if (empty($inboundStatsSummary)): ?>
+            <p class="small">Geen inbound statistieken beschikbaar.</p>
+        <?php else: ?>
+            <?php
+            $inboundStatsYearSeriesAsc = [];
+            $statsYearsAsc = $inboundStatsSummary;
+            ksort($statsYearsAsc, SORT_NATURAL);
+            foreach ($statsYearsAsc as $yearAscStatsData) {
+                $inboundStatsYearSeriesAsc[] = (float) ($yearAscStatsData['totalValue'] ?? 0.0);
+            }
+            ?>
+            <div class="table-title">
+                Inbound statistieken</div>
+            <div class="inbound-head inbound-head-stats">
+                <span class="inbound-values inbound-values-stats">
+                    <strong class="inbound-stat-col">Orders</strong>
+                    <strong class="inbound-stat-col">Waarde</strong>
+                    <strong class="inbound-stat-col">Artikelen</strong>
+                </span>
+            </div>
+            <div class="inbound-tree">
+                <?php $statsYearRows = array_values($inboundStatsSummary); ?>
+                <?php foreach ($statsYearRows as $yearIndex => $yearStatsData): ?>
+                    <details class="inbound-level-year">
+                        <summary>
+                            <?php
+                            $yearValue = (float) ($yearStatsData['totalValue'] ?? 0.0);
+                            $nextYearValue = isset($statsYearRows[$yearIndex + 1])
+                                ? (float) ($statsYearRows[$yearIndex + 1]['totalValue'] ?? 0.0)
+                                : null;
+                            $monthValueSeriesAsc = [];
+                            $statsMonthsAsc = $yearStatsData['months'];
+                            ksort($statsMonthsAsc, SORT_NATURAL);
+                            foreach ($statsMonthsAsc as $monthAscStatsData) {
+                                $monthValueSeriesAsc[] = (float) ($monthAscStatsData['totalValue'] ?? 0.0);
+                            }
+                            ?>
+                            <span
+                                class="inbound-label"><?= trend_arrow_html($nextYearValue, $yearValue, 'inbound') ?><?= html((string) $yearStatsData['label']) ?></span>
+                            <span class="inbound-values inbound-values-stats">
+                                <?= sparkline_svg($monthValueSeriesAsc) ?>
+                                <strong
+                                    class="inbound-stat-col"><?= html(fmt_number((float) ($yearStatsData['orders'] ?? 0), 0)) ?></strong>
+                                <strong class="inbound-stat-col"><?= html(fmt_money($yearValue)) ?></strong>
+                                <strong
+                                    class="inbound-stat-col"><?= html(fmt_number((float) ($yearStatsData['articles'] ?? 0.0), 0)) ?></strong>
+                            </span>
+                        </summary>
+                        <div class="inbound-children">
+                            <?php $statsMonthRows = array_values($yearStatsData['months']); ?>
+                            <?php foreach ($statsMonthRows as $monthIndex => $monthStatsData): ?>
+                                <details class="inbound-level-month">
+                                    <summary>
+                                        <?php
+                                        $monthValue = (float) ($monthStatsData['totalValue'] ?? 0.0);
+                                        $nextMonthValue = isset($statsMonthRows[$monthIndex + 1])
+                                            ? (float) ($statsMonthRows[$monthIndex + 1]['totalValue'] ?? 0.0)
+                                            : null;
+                                        ?>
+                                        <span
+                                            class="inbound-label"><?= trend_arrow_html($nextMonthValue, $monthValue, 'inbound') ?><?= html((string) $monthStatsData['label']) ?></span>
+                                        <span class="inbound-values inbound-values-stats">
+                                            <strong
+                                                class="inbound-stat-col"><?= html(fmt_number((float) ($monthStatsData['orders'] ?? 0), 0)) ?></strong>
+                                            <strong class="inbound-stat-col"><?= html(fmt_money($monthValue)) ?></strong>
+                                            <strong
+                                                class="inbound-stat-col"><?= html(fmt_number((float) ($monthStatsData['articles'] ?? 0.0), 2)) ?></strong>
+                                        </span>
+                                    </summary>
+                                    <div class="inbound-children">
+                                        <?php $statsWeekRows = array_values($monthStatsData['weeks']); ?>
+                                        <?php foreach ($statsWeekRows as $weekIndex => $weekStatsData): ?>
+                                            <div class="inbound-row">
+                                                <?php
+                                                $weekValue = (float) ($weekStatsData['totalValue'] ?? 0.0);
+                                                $nextWeekValue = isset($statsWeekRows[$weekIndex + 1])
+                                                    ? (float) ($statsWeekRows[$weekIndex + 1]['totalValue'] ?? 0.0)
+                                                    : null;
+                                                ?>
+                                                <span
+                                                    class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue, 'inbound') ?><?= html((string) $weekStatsData['label']) ?></span>
+                                                <span class="inbound-values inbound-values-stats">
+                                                    <strong
+                                                        class="inbound-stat-col"><?= html(fmt_number((float) ($weekStatsData['orders'] ?? 0), 0)) ?></strong>
+                                                    <strong class="inbound-stat-col"><?= html(fmt_money($weekValue)) ?></strong>
+                                                    <strong
+                                                        class="inbound-stat-col"><?= html(fmt_number((float) ($weekStatsData['articles'] ?? 0.0), 2)) ?></strong>
+                                                </span>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </details>
+                            <?php endforeach; ?>
+                        </div>
+                    </details>
                 <?php endforeach; ?>
-            </tbody>
-        </table>
+            </div>
+        <?php endif; ?>
         <?php
         json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
     }

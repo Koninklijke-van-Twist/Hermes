@@ -349,6 +349,22 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             width: 100%;
         }
 
+        .inbound-head.inbound-head-stats {
+            font-size: 14px;
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+        .inbound-values.inbound-values-stats {
+            gap: 20px;
+        }
+
+        .inbound-stat-col {
+            display: inline-block;
+            min-width: 136px;
+            text-align: right;
+        }
+
         .inbound-label {
             display: inline-flex;
             align-items: center;
@@ -503,7 +519,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
         <div class="header">
             <h1>Omzet Dashboard</h1>
-            <p class="sub">Omzet, order intake, levertijd, top 10 producten en inbound (week/maand/jaar).
+            <p class="sub">Omzet, order intake, levertijd, top 10 klanten/producten en inbound (week/maand/jaar).
             </p>
         </div>
 
@@ -570,6 +586,33 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             </div>
 
             <div class="grid">
+                <div class="table-wrap" style="margin:0;" id="sec-top-customers-week"
+                    title="Top 10 klanten (week): De tien klanten met de hoogste afgenomen waarde in de huidige week.">
+                    <div class="table-title">
+                        Top 10 klanten (week)</div>
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin:0;" id="sec-top-customers-maand"
+                    title="Top 10 klanten (maand): De tien klanten met de hoogste afgenomen waarde in de huidige maand.">
+                    <div class="table-title">
+                        Top 10 klanten (maand)</div>
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+                <div class="table-wrap" style="margin:0;" id="sec-top-customers-jaar"
+                    title="Top 10 klanten (jaar): De tien klanten met de hoogste afgenomen waarde in het huidige jaar.">
+                    <div class="table-title">
+                        Top 10 klanten (jaar)</div>
+                    <div class="loading-box large">
+                        <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid" style="margin-top:10px;">
                 <div class="table-wrap" style="margin:0;" id="sec-top-week"
                     title="Top 10 producten (week): De tien best verkochte producten van deze week, gesorteerd op omzet. Alleen producten met een positieve marge worden getoond.">
                     <div class="table-title">
@@ -618,10 +661,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                         </div>
                     </div>
                 </div>
-                <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-latest"
-                    title="Laatste inbound: Een overzicht van de meest recent ontvangen goederen, inclusief ontvangstdatum en waarde. Dit helpt bij het volgen van recente leveringen.">
+                <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-stats"
+                    title="Inbound statistieken: Een overzicht van aantallen orders, orderwaarde en artikelen per jaar, maand en week.">
                     <div class="table-title">
-                        Laatste inbound</div>
+                        Inbound statistieken</div>
                     <div class="loading-box large">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
@@ -654,15 +697,18 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 { id: 'sec-card-order-intake', section: 'card_order_intake', large: false },
                 { id: 'sec-card-lead-time', section: 'card_lead_time', large: false },
                 { id: 'sec-table-omzet-productgroep', section: 'table_omzet_productgroep', large: true },
+                { id: 'sec-top-customers-week', section: 'table_top_customers', period: 'week', large: true },
+                { id: 'sec-top-customers-maand', section: 'table_top_customers', period: 'maand', large: true },
+                { id: 'sec-top-customers-jaar', section: 'table_top_customers', period: 'jaar', large: true },
                 { id: 'sec-top-week', section: 'table_top_products', period: 'week', large: true },
                 { id: 'sec-top-maand', section: 'table_top_products', period: 'maand', large: true },
                 { id: 'sec-top-jaar', section: 'table_top_products', period: 'jaar', large: true },
                 { id: 'sec-inbound-totals-body', section: 'inbound_totals', large: true },
-                { id: 'sec-inbound-latest', section: 'inbound_latest', large: true },
+                { id: 'sec-inbound-stats', section: 'inbound_stats', large: true },
             ];
             const inboundSectionConfigs = sectionConfigs.filter(function (config)
             {
-                return config.section === 'inbound_totals' || config.section === 'inbound_latest';
+                return config.section === 'inbound_totals' || config.section === 'inbound_stats';
             });
             const kpiSectionConfigs = sectionConfigs.filter(function (config)
             {
