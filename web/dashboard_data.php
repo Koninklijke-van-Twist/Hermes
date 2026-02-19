@@ -662,7 +662,7 @@ function fetch_item_category_descriptions_long_cache(
         ],
         $auth,
         $errors,
-        $day * 120
+        $day * 14
     );
 
     $descriptionsByCode = [];

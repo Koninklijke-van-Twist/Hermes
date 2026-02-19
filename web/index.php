@@ -6,6 +6,7 @@ if (function_exists('xdebug_disable')) {
     xdebug_disable();
 }
 require __DIR__ . "/logincheck.php";
+require __DIR__ . "/odata.php";
 
 $companies = [
     "Koninklijke van Twist",
@@ -52,63 +53,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             position: relative;
         }
 
-        .cache-widget {
-            position: absolute;
-            top: 8px;
-            right: 20px;
-            background: #fff;
-            border: 1px solid #d7dfeb;
-            border-radius: 8px;
-            padding: 6px 8px;
-            font-size: 11px;
-            color: #4f6077;
-            line-height: 1.2;
-            min-width: 145px;
-            text-align: right;
-            z-index: 10;
-        }
-
-        .cache-value {
-            font-weight: 700;
-            color: #314257;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .cache-glow-up {
-            animation: cacheGlowUp 700ms ease-out 1;
-        }
-
-        .cache-glow-down {
-            animation: cacheGlowDown 700ms ease-out 1;
-        }
-
-        @keyframes cacheGlowUp {
-            0% {
-                box-shadow: 0 0 0 0 rgba(215, 40, 40, 0.55);
-            }
-
-            35% {
-                box-shadow: 0 0 0 4px rgba(215, 40, 40, 0.25);
-            }
-
-            100% {
-                box-shadow: 0 0 0 0 rgba(215, 40, 40, 0);
-            }
-        }
-
-        @keyframes cacheGlowDown {
-            0% {
-                box-shadow: 0 0 0 0 rgba(21, 160, 70, 0.55);
-            }
-
-            35% {
-                box-shadow: 0 0 0 4px rgba(21, 160, 70, 0.25);
-            }
-
-            100% {
-                box-shadow: 0 0 0 0 rgba(21, 160, 70, 0);
-            }
-        }
 
         .header {
             margin-bottom: 16px;
@@ -545,21 +489,17 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 text-align: right;
             }
 
-            .cache-widget {
-                position: static;
-                margin-bottom: 10px;
-                width: fit-content;
-            }
         }
     </style>
 </head>
 
 <body>
     <div class="wrap">
-        <div class="cache-widget" id="cacheWidget">
-            <span>Cache:</span>
-            <span class="cache-value" id="cacheBytes">0 bytes</span>
-        </div>
+        <?= injectTimerHtml([
+            'statusUrl' => 'odata.php?action=cache_status',
+            'title' => 'Cachebestanden',
+            'label' => 'Cache',
+        ]) ?>
 
         <div class="header">
             <h1>Omzet Dashboard</h1>
@@ -698,12 +638,6 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             const departmentSelect = document.getElementById('department_filter');
             const inboundVendorSelect = document.getElementById('inbound_vendor_filter');
             const companySelect = document.getElementById('company');
-            const cacheWidgetEl = document.getElementById('cacheWidget');
-            const cacheBytesEl = document.getElementById('cacheBytes');
-            let lastCacheBytes = null;
-            let displayedCacheBytes = 0;
-            let cacheTargetBytes = 0;
-            let cacheAnimFrameId = null;
             const defaultKpiPeriodState = {
                 selected_year: 'avg',
                 selected_month: 'avg',
@@ -1108,90 +1042,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 });
             }
 
-            function setCacheGlow (className)
-            {
-                cacheWidgetEl.classList.remove('cache-glow-up', 'cache-glow-down');
-                void cacheWidgetEl.offsetWidth;
-                cacheWidgetEl.classList.add(className);
-            }
-
-            function renderCacheBytes (value)
-            {
-                const rounded = Math.max(0, Math.round(value));
-                cacheBytesEl.textContent = rounded.toLocaleString('nl-NL') + ' bytes';
-            }
-
-            function animateCacheBytes ()
-            {
-                const delta = cacheTargetBytes - displayedCacheBytes;
-                if (Math.abs(delta) < 0.5)
-                {
-                    displayedCacheBytes = cacheTargetBytes;
-                    renderCacheBytes(displayedCacheBytes);
-                    cacheAnimFrameId = null;
-                    return;
-                }
-
-                displayedCacheBytes += delta * 0.18;
-                renderCacheBytes(displayedCacheBytes);
-                cacheAnimFrameId = requestAnimationFrame(animateCacheBytes);
-            }
-
-            function setCacheTarget (bytes)
-            {
-                cacheTargetBytes = Math.max(0, bytes);
-
-                if (cacheAnimFrameId === null)
-                {
-                    cacheAnimFrameId = requestAnimationFrame(animateCacheBytes);
-                }
-            }
-
-            async function updateCacheWidget ()
-            {
-                try
-                {
-                    const response = await fetch('cache_status.php?_t=' + Date.now(), {
-                        headers: { 'Accept': 'application/json' },
-                        credentials: 'same-origin',
-                        cache: 'no-store',
-                        priority: 'high'
-                    });
-
-                    if (!response.ok)
-                    {
-                        return;
-                    }
-
-                    const payload = await response.json();
-                    const bytes = Number(payload.bytes || 0);
-                    setCacheTarget(bytes);
-
-                    if (lastCacheBytes !== null)
-                    {
-                        if (bytes > lastCacheBytes)
-                        {
-                            setCacheGlow('cache-glow-up');
-                        } else if (bytes < lastCacheBytes)
-                        {
-                            setCacheGlow('cache-glow-down');
-                        }
-                    }
-
-                    lastCacheBytes = bytes;
-                } catch (error)
-                {
-                    console.warn('Cache-status laden mislukt', error);
-                }
-            }
-
-            updateCacheWidget();
-            setTimeout(updateCacheWidget, 150);
             setTimeout(function ()
             {
                 loadDashboard(false);
             }, 0);
-            setInterval(updateCacheWidget, 1000);
         })();
     </script>
 </body>
