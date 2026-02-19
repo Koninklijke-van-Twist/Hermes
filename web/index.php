@@ -542,41 +542,65 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
         <div id="dashboardContent" aria-busy="true">
             <div class="grid">
-                <div class="card" id="sec-card-omzet">
+                <div class="card" id="sec-card-omzet"
+                    title="Omzet: Het totaalbedrag van alle verkochte producten en diensten binnen de geselecteerde periode. Dit bedrag geeft weer hoeveel er is gefactureerd aan klanten.">
+                    <div class="card-header-inline">
+                        <h3>Omzet</h3>
+                    </div>
                     <div class="loading-box">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
                 </div>
-                <div class="card" id="sec-card-order-intake">
+                <div class="card" id="sec-card-order-intake"
+                    title="Order intake: Het totaalbedrag van nieuwe orders die zijn binnengekomen in de geselecteerde periode. Dit geeft inzicht in de waarde van nieuwe opdrachten.">
+                    <div class="card-header-inline">
+                        <h3>Order intake</h3>
+                    </div>
                     <div class="loading-box">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
                 </div>
-                <div class="card" id="sec-card-lead-time">
+                <div class="card" id="sec-card-lead-time"
+                    title="Levertijd: De gemiddelde tijd (in dagen) tussen het plaatsen van een order en de uiteindelijke levering aan de klant, gemeten over de geselecteerde periode.">
+                    <div class="card-header-inline">
+                        <h3>Levertijd</h3>
+                    </div>
                     <div class="loading-box">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
                 </div>
             </div>
 
-            <div class="table-wrap" id="sec-table-omzet-productgroep">
+            <div class="table-wrap" id="sec-table-omzet-productgroep"
+                title="Omzet per productgroep: Hier zie je de omzet uitgesplitst per productgroep. Dit helpt om te zien welke groepen het meeste bijdragen aan de totale omzet.">
+                <div class="table-title">
+                    Omzet per productgroep</div>
                 <div class="loading-box large">
                     <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                 </div>
             </div>
 
             <div class="grid">
-                <div class="table-wrap" style="margin:0;" id="sec-top-week">
+                <div class="table-wrap" style="margin:0;" id="sec-top-week"
+                    title="Top 10 producten (week): De tien best verkochte producten van deze week, gesorteerd op omzet. Alleen producten met een positieve marge worden getoond.">
+                    <div class="table-title">
+                        Top 10 producten (week)</div>
                     <div class="loading-box large">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
                 </div>
-                <div class="table-wrap" style="margin:0;" id="sec-top-maand">
+                <div class="table-wrap" style="margin:0;" id="sec-top-maand"
+                    title="Top 10 producten (maand): De tien best verkochte producten van deze maand, gesorteerd op omzet. Alleen producten met een positieve marge worden getoond.">
+                    <div class="table-title">
+                        Top 10 producten (maand)</div>
                     <div class="loading-box large">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
                 </div>
-                <div class="table-wrap" style="margin:0;" id="sec-top-jaar">
+                <div class="table-wrap" style="margin:0;" id="sec-top-jaar"
+                    title="Top 10 producten (jaar): De tien best verkochte producten van dit jaar, gesorteerd op omzet. Alleen producten met een positieve marge worden getoond.">
+                    <div class="table-title">
+                        Top 10 producten (jaar)</div>
                     <div class="loading-box large">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
@@ -586,7 +610,9 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             <div class="grid" style="margin-top:14px;">
                 <div class="card" id="sec-inbound-totals">
                     <div class="card-header-inline">
-                        <h2>Inbound Totalen</h2>
+                        <h2
+                            title="Inbound totalen: Het totaalbedrag van goederen die zijn ontvangen (binnengekomen) in de geselecteerde periode. Dit geeft inzicht in de waarde van de ontvangen voorraad.">
+                            Inbound Totalen</h2>
                         <div class="field-inline">
                             <label for="inbound_vendor_filter">Vendor</label>
                             <select id="inbound_vendor_filter" data-selected="<?= html($vendorFilter) ?>">
@@ -603,7 +629,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                         </div>
                     </div>
                 </div>
-                <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-latest">
+                <div class="table-wrap" style="grid-column: span 2; margin:0;" id="sec-inbound-latest"
+                    title="Laatste inbound: Een overzicht van de meest recent ontvangen goederen, inclusief ontvangstdatum en waarde. Dit helpt bij het volgen van recente leveringen.">
+                    <div class="table-title">
+                        Laatste inbound</div>
                     <div class="loading-box large">
                         <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                     </div>
