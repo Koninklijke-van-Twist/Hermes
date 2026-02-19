@@ -30,6 +30,9 @@ $departmentFilter = normalize((string) ($_GET['department_filter'] ?? $_GET['par
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 $section = trim((string) ($_GET['section'] ?? ''));
 $period = trim((string) ($_GET['period'] ?? ''));
+$selectedYearInput = trim((string) ($_GET['selected_year'] ?? 'avg'));
+$selectedMonthInput = trim((string) ($_GET['selected_month'] ?? 'avg'));
+$selectedWeekInput = trim((string) ($_GET['selected_week'] ?? 'avg'));
 
 $today = new DateTimeImmutable('today');
 $fromYear = (int) $today->format('Y') - 2;
@@ -363,6 +366,190 @@ function push_period_total(array &$totals, DateTimeImmutable $date, float $amoun
     }
 }
 
+function avg_values(array $values): float
+{
+    if (empty($values)) {
+        return 0.0;
+    }
+
+    return array_sum($values) / count($values);
+}
+
+function render_select_options(array $options, string $selected): string
+{
+    $html = '';
+    foreach ($options as $option) {
+        $value = (string) ($option['value'] ?? '');
+        $label = (string) ($option['label'] ?? $value);
+        $isSelected = $value === $selected;
+        $html .= '<option value="' . html($value) . '"' . ($isSelected ? ' selected' : '') . '>' . html($label) . '</option>';
+    }
+
+    return $html;
+}
+
+function period_selection_result(
+    array $yearValues,
+    array $monthValues,
+    array $monthsByYear,
+    array $monthLabels,
+    array $weekValuesByMonth,
+    array $weekLabelsByMonth,
+    string $selectedYearInput,
+    string $selectedMonthInput,
+    string $selectedWeekInput
+): array {
+    krsort($yearValues, SORT_NATURAL);
+    krsort($monthValues, SORT_NATURAL);
+    foreach ($monthsByYear as &$monthMap) {
+        krsort($monthMap, SORT_NATURAL);
+    }
+    unset($monthMap);
+    foreach ($weekValuesByMonth as &$weekMap) {
+        ksort($weekMap, SORT_NATURAL);
+    }
+    unset($weekMap);
+
+    $yearOptions = [['value' => 'avg', 'label' => 'Gemiddeld']];
+    foreach ($yearValues as $yearKey => $_value) {
+        $yearOptions[] = ['value' => (string) $yearKey, 'label' => (string) $yearKey];
+    }
+
+    $selectedYear = 'avg';
+    if ($selectedYearInput !== 'avg' && isset($yearValues[$selectedYearInput])) {
+        $selectedYear = $selectedYearInput;
+    }
+
+    $monthOptions = [['value' => 'avg', 'label' => 'Gemiddeld']];
+    $monthEnabled = false;
+    if ($selectedYear !== 'avg' && isset($monthsByYear[$selectedYear])) {
+        $monthEnabled = true;
+        foreach ($monthsByYear[$selectedYear] as $monthKey => $_trueValue) {
+            $monthOptions[] = [
+                'value' => (string) $monthKey,
+                'label' => (string) ($monthLabels[$monthKey] ?? $monthKey),
+            ];
+        }
+    }
+
+    $selectedMonth = 'avg';
+    if ($monthEnabled && $selectedMonthInput !== 'avg' && isset($monthsByYear[$selectedYear][$selectedMonthInput])) {
+        $selectedMonth = $selectedMonthInput;
+    }
+
+    $weekOptions = [['value' => 'avg', 'label' => 'Gemiddeld']];
+    $weekEnabled = false;
+    if ($selectedMonth !== 'avg' && isset($weekValuesByMonth[$selectedMonth])) {
+        $weekEnabled = true;
+        foreach ($weekValuesByMonth[$selectedMonth] as $weekKey => $_weekValue) {
+            $weekOptions[] = [
+                'value' => (string) $weekKey,
+                'label' => (string) ($weekLabelsByMonth[$selectedMonth][$weekKey] ?? $weekKey),
+            ];
+        }
+    }
+
+    $selectedWeek = 'avg';
+    if ($weekEnabled && $selectedWeekInput !== 'avg' && isset($weekValuesByMonth[$selectedMonth][$selectedWeekInput])) {
+        $selectedWeek = $selectedWeekInput;
+    }
+
+    $yearMetricValue = 0.0;
+    if ($selectedYear === 'avg') {
+        $yearMetricValue = avg_values(array_values($yearValues));
+    } else {
+        $yearMetricValue = (float) ($yearValues[$selectedYear] ?? 0.0);
+    }
+
+    $monthMetricValue = 0.0;
+    if ($selectedMonth === 'avg') {
+        if ($selectedYear === 'avg') {
+            $monthMetricValue = avg_values(array_values($monthValues));
+        } else {
+            $scopedMonthValues = [];
+            foreach ($monthsByYear[$selectedYear] ?? [] as $monthKey => $_trueValue) {
+                $scopedMonthValues[] = (float) ($monthValues[$monthKey] ?? 0.0);
+            }
+            $monthMetricValue = avg_values($scopedMonthValues);
+        }
+    } else {
+        $monthMetricValue = (float) ($monthValues[$selectedMonth] ?? 0.0);
+    }
+
+    $weekMetricValue = 0.0;
+    if ($selectedWeek === 'avg') {
+        if ($selectedMonth === 'avg') {
+            $flatWeekValues = [];
+            foreach ($weekValuesByMonth as $weekMap) {
+                foreach ($weekMap as $weekValue) {
+                    $flatWeekValues[] = (float) $weekValue;
+                }
+            }
+            $weekMetricValue = avg_values($flatWeekValues);
+        } else {
+            $weekMetricValue = avg_values(array_values($weekValuesByMonth[$selectedMonth] ?? []));
+        }
+    } else {
+        $weekMetricValue = (float) ($weekValuesByMonth[$selectedMonth][$selectedWeek] ?? 0.0);
+    }
+
+    return [
+        'selected' => [
+            'year' => $selectedYear,
+            'month' => $selectedMonth,
+            'week' => $selectedWeek,
+        ],
+        'options' => [
+            'year' => $yearOptions,
+            'month' => $monthOptions,
+            'week' => $weekOptions,
+        ],
+        'enabled' => [
+            'month' => $monthEnabled,
+            'week' => $weekEnabled,
+        ],
+        'values' => [
+            'jaar' => $yearMetricValue,
+            'maand' => $monthMetricValue,
+            'week' => $weekMetricValue,
+        ],
+    ];
+}
+
+function render_period_metric_rows(array $selectionResult, callable $formatter): string
+{
+    $selected = $selectionResult['selected'];
+    $options = $selectionResult['options'];
+    $enabled = $selectionResult['enabled'];
+    $values = $selectionResult['values'];
+
+    ob_start();
+    ?>
+    <div class="metric-row">
+        <span class="metric-label">Jaar</span>
+        <select class="period-select" data-level="year">
+            <?= render_select_options($options['year'], (string) $selected['year']) ?>
+        </select>
+        <strong class="metric-value"><?= html($formatter((float) ($values['jaar'] ?? 0.0))) ?></strong>
+    </div>
+    <div class="metric-row">
+        <span class="metric-label">Maand</span>
+        <select class="period-select" data-level="month" <?= !empty($enabled['month']) ? '' : 'disabled' ?>>
+            <?= render_select_options($options['month'], (string) $selected['month']) ?>
+        </select>
+        <strong class="metric-value"><?= html($formatter((float) ($values['maand'] ?? 0.0))) ?></strong>
+    </div>
+    <div class="metric-row">
+        <span class="metric-label">Week</span>
+        <select class="period-select" data-level="week" <?= !empty($enabled['week']) ? '' : 'disabled' ?>>
+            <?= render_select_options($options['week'], (string) $selected['week']) ?>
+        </select>
+        <strong class="metric-value"><?= html($formatter((float) ($values['week'] ?? 0.0))) ?></strong>
+    </div>
+    <?php
+    return (string) ob_get_clean();
+}
+
 function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors): array
 {
     try {
@@ -484,7 +671,13 @@ if ($section === 'card_omzet_parts') {
         $errors
     );
 
-    $totals = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
+    $yearValues = [];
+    $monthValues = [];
+    $monthsByYear = [];
+    $monthLabels = [];
+    $weekValuesByMonth = [];
+    $weekLabelsByMonth = [];
+
     foreach ($valueEntries as $row) {
         if (!matches_code_filter($row, ['AuxiliaryIndex1'], $departmentFilter)) {
             continue;
@@ -495,17 +688,38 @@ if ($section === 'card_omzet_parts') {
             continue;
         }
 
-        push_period_total($totals, $postingDate, as_float($row['Sales_Amount_Actual'] ?? 0), $weekStart, $monthStart, $yearStart, $today);
+        $value = as_float($row['Sales_Amount_Actual'] ?? 0);
+        $yearKey = $postingDate->format('Y');
+        $monthKey = $postingDate->format('Y-m');
+        $weekKey = $postingDate->format('o-\\WW');
+        $weekNumber = $postingDate->format('W');
+
+        $yearValues[$yearKey] = ($yearValues[$yearKey] ?? 0.0) + $value;
+        $monthValues[$monthKey] = ($monthValues[$monthKey] ?? 0.0) + $value;
+        $monthsByYear[$yearKey][$monthKey] = true;
+        $monthLabels[$monthKey] = nl_month_year_label($postingDate);
+        $weekValuesByMonth[$monthKey][$weekKey] = ($weekValuesByMonth[$monthKey][$weekKey] ?? 0.0) + $value;
+        $weekLabelsByMonth[$monthKey][$weekKey] = 'Week ' . $weekNumber;
     }
+
+    $selectionResult = period_selection_result(
+        $yearValues,
+        $monthValues,
+        $monthsByYear,
+        $monthLabels,
+        $weekValuesByMonth,
+        $weekLabelsByMonth,
+        $selectedYearInput,
+        $selectedMonthInput,
+        $selectedWeekInput
+    );
 
     ob_start();
     ?>
     <h3>Omzet Parts</h3>
-    <?php foreach ($periods as $k => $label): ?>
-        <div class="metric">
-            <span><?= html($label) ?></span>: <strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
-        </div>
-    <?php endforeach; ?>
+    <?= render_period_metric_rows($selectionResult, function (float $value): string {
+        return fmt_money($value);
+    }) ?>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
@@ -525,7 +739,13 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     );
 
     if ($section === 'card_order_intake') {
-        $totals = ['week' => 0.0, 'maand' => 0.0, 'jaar' => 0.0];
+        $yearValues = [];
+        $monthValues = [];
+        $monthsByYear = [];
+        $monthLabels = [];
+        $weekValuesByMonth = [];
+        $weekLabelsByMonth = [];
+
         foreach ($salesOrderLines as $line) {
             if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
                 continue;
@@ -536,26 +756,51 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
                 continue;
             }
 
-            push_period_total($totals, $intakeDate, as_float($line['Line_Amount'] ?? 0), $weekStart, $monthStart, $yearStart, $today);
+            $value = as_float($line['Line_Amount'] ?? 0);
+            $yearKey = $intakeDate->format('Y');
+            $monthKey = $intakeDate->format('Y-m');
+            $weekKey = $intakeDate->format('o-\\WW');
+            $weekNumber = $intakeDate->format('W');
+
+            $yearValues[$yearKey] = ($yearValues[$yearKey] ?? 0.0) + $value;
+            $monthValues[$monthKey] = ($monthValues[$monthKey] ?? 0.0) + $value;
+            $monthsByYear[$yearKey][$monthKey] = true;
+            $monthLabels[$monthKey] = nl_month_year_label($intakeDate);
+            $weekValuesByMonth[$monthKey][$weekKey] = ($weekValuesByMonth[$monthKey][$weekKey] ?? 0.0) + $value;
+            $weekLabelsByMonth[$monthKey][$weekKey] = 'Week ' . $weekNumber;
         }
+
+        $selectionResult = period_selection_result(
+            $yearValues,
+            $monthValues,
+            $monthsByYear,
+            $monthLabels,
+            $weekValuesByMonth,
+            $weekLabelsByMonth,
+            $selectedYearInput,
+            $selectedMonthInput,
+            $selectedWeekInput
+        );
 
         ob_start();
         ?>
         <h3>Order intake</h3>
-        <?php foreach ($periods as $k => $label): ?>
-            <div class="metric">
-                <span><?= html($label) ?></span>: <strong><?= html(fmt_money(period_value($totals, $k))) ?></strong>
-            </div>
-        <?php endforeach; ?>
+        <?= render_period_metric_rows($selectionResult, function (float $value): string {
+            return fmt_money($value);
+        }) ?>
         <?php
         json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
     }
 
-    $leadTime = [
-        'week' => ['sum' => 0.0, 'count' => 0],
-        'maand' => ['sum' => 0.0, 'count' => 0],
-        'jaar' => ['sum' => 0.0, 'count' => 0],
-    ];
+    $yearSums = [];
+    $yearCounts = [];
+    $monthSums = [];
+    $monthCounts = [];
+    $monthsByYear = [];
+    $monthLabels = [];
+    $weekSumsByMonth = [];
+    $weekCountsByMonth = [];
+    $weekLabelsByMonth = [];
 
     foreach ($salesOrderLines as $line) {
         if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
@@ -573,29 +818,62 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
             continue;
         }
 
-        foreach (['week' => $weekStart, 'maand' => $monthStart, 'jaar' => $yearStart] as $p => $start) {
-            if (!in_period($shipmentDate, $start, $today)) {
-                continue;
-            }
-            $leadTime[$p]['sum'] += $days;
-            $leadTime[$p]['count']++;
+        $yearKey = $shipmentDate->format('Y');
+        $monthKey = $shipmentDate->format('Y-m');
+        $weekKey = $shipmentDate->format('o-\\WW');
+        $weekNumber = $shipmentDate->format('W');
+
+        $yearSums[$yearKey] = ($yearSums[$yearKey] ?? 0.0) + $days;
+        $yearCounts[$yearKey] = ($yearCounts[$yearKey] ?? 0) + 1;
+
+        $monthSums[$monthKey] = ($monthSums[$monthKey] ?? 0.0) + $days;
+        $monthCounts[$monthKey] = ($monthCounts[$monthKey] ?? 0) + 1;
+        $monthsByYear[$yearKey][$monthKey] = true;
+        $monthLabels[$monthKey] = nl_month_year_label($shipmentDate);
+
+        $weekSumsByMonth[$monthKey][$weekKey] = ($weekSumsByMonth[$monthKey][$weekKey] ?? 0.0) + $days;
+        $weekCountsByMonth[$monthKey][$weekKey] = ($weekCountsByMonth[$monthKey][$weekKey] ?? 0) + 1;
+        $weekLabelsByMonth[$monthKey][$weekKey] = 'Week ' . $weekNumber;
+    }
+
+    $yearValues = [];
+    foreach ($yearSums as $yearKey => $yearSum) {
+        $yearCount = (int) ($yearCounts[$yearKey] ?? 0);
+        $yearValues[$yearKey] = $yearCount > 0 ? ($yearSum / $yearCount) : 0.0;
+    }
+
+    $monthValues = [];
+    foreach ($monthSums as $monthKey => $monthSum) {
+        $monthCount = (int) ($monthCounts[$monthKey] ?? 0);
+        $monthValues[$monthKey] = $monthCount > 0 ? ($monthSum / $monthCount) : 0.0;
+    }
+
+    $weekValuesByMonth = [];
+    foreach ($weekSumsByMonth as $monthKey => $weekSums) {
+        foreach ($weekSums as $weekKey => $weekSum) {
+            $weekCount = (int) ($weekCountsByMonth[$monthKey][$weekKey] ?? 0);
+            $weekValuesByMonth[$monthKey][$weekKey] = $weekCount > 0 ? ($weekSum / $weekCount) : 0.0;
         }
     }
 
-    $leadTimeAvg = [
-        'week' => $leadTime['week']['count'] ? ($leadTime['week']['sum'] / $leadTime['week']['count']) : 0.0,
-        'maand' => $leadTime['maand']['count'] ? ($leadTime['maand']['sum'] / $leadTime['maand']['count']) : 0.0,
-        'jaar' => $leadTime['jaar']['count'] ? ($leadTime['jaar']['sum'] / $leadTime['jaar']['count']) : 0.0,
-    ];
+    $selectionResult = period_selection_result(
+        $yearValues,
+        $monthValues,
+        $monthsByYear,
+        $monthLabels,
+        $weekValuesByMonth,
+        $weekLabelsByMonth,
+        $selectedYearInput,
+        $selectedMonthInput,
+        $selectedWeekInput
+    );
 
     ob_start();
     ?>
     <h3>Gemiddelde levertijd (dagen)</h3>
-    <?php foreach ($periods as $k => $label): ?>
-        <div class="metric">
-            <span><?= html($label) ?></span>: <strong><?= html(fmt_number($leadTimeAvg[$k] ?? 0, 1)) ?></strong>
-        </div>
-    <?php endforeach; ?>
+    <?= render_period_metric_rows($selectionResult, function (float $value): string {
+        return fmt_number($value, 1);
+    }) ?>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }

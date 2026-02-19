@@ -274,6 +274,38 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             color: #5b6d84;
         }
 
+        .metric-row {
+            display: grid;
+            grid-template-columns: 62px minmax(130px, 1fr) auto;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .metric-label {
+            color: #4f6077;
+            font-size: 12px;
+        }
+
+        .metric-row .period-select {
+            width: 100%;
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid #c9d4e3;
+            font-size: 13px;
+            background: #fff;
+        }
+
+        .metric-row .period-select:disabled {
+            background: #f5f7fb;
+            color: #8a98ac;
+        }
+
+        .metric-value {
+            font-variant-numeric: tabular-nums;
+            justify-self: end;
+        }
+
         .inbound-head,
         .inbound-row,
         .inbound-tree summary {
@@ -644,6 +676,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
     <script>
         (function ()
         {
+            const urlParamsInit = new URLSearchParams(window.location.search);
             const contentEl = document.getElementById('dashboardContent');
             const formEl = document.getElementById('dashboardFilters');
             const departmentSelect = document.getElementById('department_filter');
@@ -655,6 +688,11 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             let displayedCacheBytes = 0;
             let cacheTargetBytes = 0;
             let cacheAnimFrameId = null;
+            const periodState = {
+                selected_year: urlParamsInit.get('selected_year') || 'avg',
+                selected_month: urlParamsInit.get('selected_month') || 'avg',
+                selected_week: urlParamsInit.get('selected_week') || 'avg'
+            };
 
             const sectionConfigs = [
                 { id: 'sec-card-omzet', section: 'card_omzet_parts', large: false },
@@ -670,6 +708,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             const inboundSectionConfigs = sectionConfigs.filter(function (config)
             {
                 return config.section === 'inbound_totals' || config.section === 'inbound_latest';
+            });
+            const kpiSectionConfigs = sectionConfigs.filter(function (config)
+            {
+                return config.section === 'card_omzet_parts' || config.section === 'card_order_intake' || config.section === 'card_lead_time';
             });
 
             function loadingMarkup (large)
@@ -773,11 +815,38 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 const params = new URLSearchParams(formData);
                 params.set('company', companySelect.value || '');
                 params.set('vendor_filter', inboundVendorSelect ? (inboundVendorSelect.value || '') : '');
+                params.set('selected_year', periodState.selected_year || 'avg');
+                params.set('selected_month', periodState.selected_month || 'avg');
+                params.set('selected_week', periodState.selected_week || 'avg');
                 for (const [k, v] of Object.entries(extraParams))
                 {
                     params.set(k, String(v));
                 }
                 return params;
+            }
+
+            function syncPeriodStateByLevel (level, value)
+            {
+                const safeValue = value || 'avg';
+                if (level === 'year')
+                {
+                    periodState.selected_year = safeValue;
+                    periodState.selected_month = 'avg';
+                    periodState.selected_week = 'avg';
+                    return;
+                }
+
+                if (level === 'month')
+                {
+                    periodState.selected_month = safeValue;
+                    periodState.selected_week = 'avg';
+                    return;
+                }
+
+                if (level === 'week')
+                {
+                    periodState.selected_week = safeValue;
+                }
             }
 
             async function loadFilterOptions ()
@@ -888,6 +957,17 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
             }
 
+            async function loadKpiCards (pushState = false)
+            {
+                if (pushState)
+                {
+                    const params = buildRequestParams();
+                    history.pushState({}, '', '?' + params.toString());
+                }
+
+                await Promise.all(kpiSectionConfigs.map(loadSection));
+            }
+
             async function loadInboundOnly (pushState = false)
             {
                 if (inboundVendorSelect)
@@ -920,6 +1000,24 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 loadDashboard(true);
             });
 
+            contentEl.addEventListener('change', function (event)
+            {
+                const target = event.target;
+                if (!(target instanceof HTMLSelectElement) || !target.classList.contains('period-select'))
+                {
+                    return;
+                }
+
+                const level = String(target.dataset.level || '').toLowerCase();
+                if (level !== 'year' && level !== 'month' && level !== 'week')
+                {
+                    return;
+                }
+
+                syncPeriodStateByLevel(level, target.value || 'avg');
+                loadKpiCards(true);
+            });
+
             window.addEventListener('popstate', function ()
             {
                 const params = new URLSearchParams(window.location.search);
@@ -929,6 +1027,9 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 {
                     inboundVendorSelect.dataset.selected = params.get('vendor_filter') || '';
                 }
+                periodState.selected_year = params.get('selected_year') || 'avg';
+                periodState.selected_month = params.get('selected_month') || 'avg';
+                periodState.selected_week = params.get('selected_week') || 'avg';
                 loadDashboard(false);
             });
 
