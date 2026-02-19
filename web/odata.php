@@ -411,6 +411,50 @@ function odata_send_cache_delete_json(): void
     exit;
 }
 
+function odata_send_cache_clear_json(): void
+{
+    if (function_exists('xdebug_disable')) {
+        xdebug_disable();
+    }
+
+    require_once __DIR__ . '/auth.php';
+    require_once __DIR__ . '/logincheck.php';
+
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+    $deletedCount = 0;
+    $failedCount = 0;
+    $cacheDir = cache_base_dir();
+
+    if (is_dir($cacheDir)) {
+        $iterator = new FilesystemIterator($cacheDir, FilesystemIterator::SKIP_DOTS);
+        foreach ($iterator as $fileInfo) {
+            if (!$fileInfo->isFile()) {
+                continue;
+            }
+
+            $filename = $fileInfo->getFilename();
+            if (pathinfo($filename, PATHINFO_EXTENSION) !== 'json') {
+                continue;
+            }
+
+            if (@unlink($fileInfo->getPathname())) {
+                $deletedCount++;
+            } else {
+                $failedCount++;
+            }
+        }
+    }
+
+    echo json_encode([
+        'ok' => $failedCount === 0,
+        'deleted_count' => $deletedCount,
+        'failed_count' => $failedCount,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 function odata_is_direct_request(): bool
 {
     $self = basename(__FILE__);
@@ -432,6 +476,7 @@ function odata_is_direct_request(): bool
  * Ondersteunde opties:
  * - statusUrl (string) Endpoint voor JSON payload met keys: bytes (number), entries (array)
  * - deleteUrl (string) Endpoint voor direct verwijderen van 1 cachebestand (POST id=<filename>)
+ * - clearUrl  (string) Endpoint voor verwijderen van alle cachebestanden
  * - title     (string) Titel in popout-header
  * - label     (string) Label naast byte-teller
  * - css       (string) Extra CSS die onderaan het interne <style>-blok wordt toegevoegd
@@ -460,6 +505,7 @@ function odata_is_direct_request(): bool
  * injectTimerHtml([
  *   'statusUrl' => 'odata.php?action=cache_status',
  *   'deleteUrl' => 'odata.php?action=cache_delete',
+ *   'clearUrl' => 'odata.php?action=cache_clear',
  *   'title' => 'Cachebestanden',
  *   'label' => 'Cache',
  *   'css' => '{{root}} .odata-cache-widget{top:16px;left:20px;right:auto;} {{root}} .odata-cache-popout{top:64px;left:20px;right:auto;}'
@@ -469,6 +515,7 @@ function injectTimerHtml(array $options = []): string
 {
     $statusUrl = (string) ($options['statusUrl'] ?? 'odata.php?action=cache_status');
     $deleteUrl = (string) ($options['deleteUrl'] ?? 'odata.php?action=cache_delete');
+    $clearUrl = (string) ($options['clearUrl'] ?? 'odata.php?action=cache_clear');
     $title = (string) ($options['title'] ?? 'Cachebestanden');
     $label = (string) ($options['label'] ?? 'Cache');
     $instanceId = 'odata-cache-' . substr(hash('sha256', uniqid('', true)), 0, 8);
@@ -480,6 +527,7 @@ function injectTimerHtml(array $options = []): string
 
     $statusUrlJs = json_encode($statusUrl, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     $deleteUrlJs = json_encode($deleteUrl, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $clearUrlJs = json_encode($clearUrl, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     $titleHtml = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
     $labelHtml = htmlspecialchars($label, ENT_QUOTES, 'UTF-8');
 
@@ -593,6 +641,35 @@ function injectTimerHtml(array $options = []): string
             padding: 4px 6px;
             cursor: pointer;
             width: 30px;
+        }
+
+        #{$instanceId} .odata-cache-popout-head-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        #{$instanceId} .odata-cache-popout-clear {
+            border: 0;
+            background: transparent;
+            color: #c73737;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1;
+            width: 18px;
+            height: 18px;
+            display: inline-grid;
+            place-items: center;
+            padding: 0;
+        }
+
+        #{$instanceId} .odata-cache-popout-clear:hover {
+            color: #a81f1f;
+        }
+
+        #{$instanceId} .odata-cache-popout-clear:disabled {
+            opacity: 0.45;
+            cursor: default;
         }
 
         #{$instanceId} .odata-cache-popout-body {
@@ -750,7 +827,10 @@ function injectTimerHtml(array $options = []): string
     <div class="odata-cache-popout" id="{$instanceId}-popout" aria-hidden="true">
         <div class="odata-cache-popout-head">
             <span>{$titleHtml}</span>
-            <button type="button" class="odata-cache-popout-close" id="{$instanceId}-close" aria-label="Sluiten">✕</button>
+            <div class="odata-cache-popout-head-actions">
+                <button type="button" class="odata-cache-popout-clear" id="{$instanceId}-clear" aria-label="Verwijder volledige cache" title="Verwijder volledige cache">🗑</button>
+                <button type="button" class="odata-cache-popout-close" id="{$instanceId}-close" aria-label="Sluiten">✕</button>
+            </div>
         </div>
         <div class="odata-cache-popout-body" id="{$instanceId}-body"></div>
     </div>
@@ -760,6 +840,7 @@ function injectTimerHtml(array $options = []): string
         {
             const statusUrl = {$statusUrlJs};
             const deleteUrl = {$deleteUrlJs};
+            const clearUrl = {$clearUrlJs};
             const root = document.getElementById('{$instanceId}');
             if (!root)
             {
@@ -771,6 +852,7 @@ function injectTimerHtml(array $options = []): string
             const popoutEl = document.getElementById('{$instanceId}-popout');
             const popoutBodyEl = document.getElementById('{$instanceId}-body');
             const closeEl = document.getElementById('{$instanceId}-close');
+            const clearEl = document.getElementById('{$instanceId}-clear');
 
             let lastCacheBytes = null;
             let displayedCacheBytes = 0;
@@ -1040,6 +1122,55 @@ function injectTimerHtml(array $options = []): string
                 }
             }
 
+            async function clearCacheAll()
+            {
+                const message = 'Dit verwijderd de gehele cache. Wanneer u de pagina hierna opnieuw laad, kan dat lang duren. Weet u het zeker?';
+                if (!window.confirm(message))
+                {
+                    return;
+                }
+
+                if (clearEl)
+                {
+                    clearEl.disabled = true;
+                }
+
+                try
+                {
+                    const response = await fetch(withQueryParam(clearUrl, '_t', Date.now()), {
+                        method: 'POST',
+                        headers: { 'Accept': 'application/json' },
+                        credentials: 'same-origin',
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok)
+                    {
+                        await updateCacheWidget();
+                        return;
+                    }
+
+                    deletingCacheIds.clear();
+                    await updateCacheWidget();
+                    if (popoutEl.classList.contains('open'))
+                    {
+                        renderCachePopoutEntries();
+                    }
+                }
+                catch (error)
+                {
+                    console.warn('Volledige cache verwijderen mislukt', error);
+                    await updateCacheWidget();
+                }
+                finally
+                {
+                    if (clearEl)
+                    {
+                        clearEl.disabled = false;
+                    }
+                }
+            }
+
             async function updateCacheWidget()
             {
                 try
@@ -1123,6 +1254,16 @@ function injectTimerHtml(array $options = []): string
                 });
             }
 
+            if (clearEl)
+            {
+                clearEl.addEventListener('click', function (event)
+                {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    clearCacheAll();
+                });
+            }
+
             if (popoutBodyEl)
             {
                 popoutBodyEl.addEventListener('click', function (event)
@@ -1183,4 +1324,7 @@ if (odata_is_direct_request() && $odataAction === 'cache_status') {
 }
 if (odata_is_direct_request() && $odataAction === 'cache_delete') {
     odata_send_cache_delete_json();
+}
+if (odata_is_direct_request() && $odataAction === 'cache_clear') {
+    odata_send_cache_clear_json();
 }
