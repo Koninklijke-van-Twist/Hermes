@@ -472,6 +472,13 @@ function odata_is_direct_request(): bool
  * - Deze functie is self-contained: output bevat een root wrapper, <style> en <script>.
  * - Meerdere instanties op 1 pagina zijn veilig; selectors worden gescope'd met uniek instance-id.
  * - Pas positionering/layout bij voorkeur aan via $options['css'] i.p.v. core CSS te wijzigen.
+ * 
+ * Default-implementatie:
+ * <?= injectTimerHtml([
+ *           'statusUrl' => 'odata.php?action=cache_status',
+ *           'title' => 'Cachebestanden',
+ *           'label' => 'Cache',
+ *       ]) ?>
  *
  * Ondersteunde opties:
  * - statusUrl (string) Endpoint voor JSON payload met keys: bytes (number), entries (array)
