@@ -576,16 +576,106 @@ function render_period_metric_rows(array $selectionResult, callable $formatter):
     return (string) ob_get_clean();
 }
 
-function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors): array
+function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors, ?int $ttlSeconds = null): array
 {
     try {
         $url = odata_company_url($environment, $company, $entity, $params);
-        $hour = 3600;
-        return odata_get_all($url, $auth, $hour * 5);
+        if ($ttlSeconds === null) {
+            $hour = 3600;
+            $ttlSeconds = $hour * 5;
+        }
+        return odata_get_all($url, $auth, $ttlSeconds);
     } catch (Throwable $e) {
         $errors[] = $entity . ': ' . $e->getMessage();
         return [];
     }
+}
+
+function odata_quote_string(string $value): string
+{
+    return "'" . str_replace("'", "''", $value) . "'";
+}
+
+function fetch_item_categories_for_items(
+    string $environment,
+    string $company,
+    array $itemNos,
+    array $auth,
+    array &$errors
+): array {
+    $itemNos = array_values(array_unique(array_filter(array_map('trim', $itemNos), function (string $value): bool {
+        return $value !== '';
+    })));
+
+    if (empty($itemNos)) {
+        return [];
+    }
+
+    $categoryByItemNo = [];
+    $chunkSize = 25;
+    $chunks = array_chunk($itemNos, $chunkSize);
+    foreach ($chunks as $chunk) {
+        $clauses = [];
+        foreach ($chunk as $itemNo) {
+            $clauses[] = 'No eq ' . odata_quote_string($itemNo);
+        }
+
+        $filter = implode(' or ', $clauses);
+        $rows = odata_fetch_safe(
+            $environment,
+            $company,
+            'AppItemCard',
+            [
+                '$select' => 'No,Item_Category_Code',
+                '$filter' => $filter,
+            ],
+            $auth,
+            $errors
+        );
+
+        foreach ($rows as $row) {
+            $itemNo = trim((string) ($row['No'] ?? ''));
+            if ($itemNo === '') {
+                continue;
+            }
+
+            $categoryByItemNo[$itemNo] = trim((string) ($row['Item_Category_Code'] ?? ''));
+        }
+    }
+
+    return $categoryByItemNo;
+}
+
+function fetch_item_category_descriptions_long_cache(
+    string $environment,
+    string $company,
+    array $auth,
+    array &$errors
+): array {
+    $day = 86400;
+    $rows = odata_fetch_safe(
+        $environment,
+        $company,
+        'ItemCategories',
+        [
+            '$select' => 'Code,Description',
+        ],
+        $auth,
+        $errors,
+        $day * 120
+    );
+
+    $descriptionsByCode = [];
+    foreach ($rows as $row) {
+        $code = trim((string) ($row['Code'] ?? ''));
+        if ($code === '') {
+            continue;
+        }
+
+        $descriptionsByCode[$code] = trim((string) ($row['Description'] ?? ''));
+    }
+
+    return $descriptionsByCode;
 }
 
 function render_with_errors(string $html, array $errors): string
@@ -918,7 +1008,40 @@ if ($section === 'table_omzet_productgroep') {
         $errors
     );
 
-    $omzetPerProduct = [];
+    $relevantItemNos = [];
+    foreach ($salesLines as $row) {
+        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+            continue;
+        }
+
+        $lineType = normalize((string) ($row['Type'] ?? ''));
+        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+            continue;
+        }
+
+        $itemNo = trim((string) ($row['No'] ?? ''));
+        if ($itemNo === '') {
+            continue;
+        }
+
+        $relevantItemNos[] = $itemNo;
+    }
+
+    $itemCategoryByNo = fetch_item_categories_for_items(
+        $environment,
+        $selectedCompany,
+        $relevantItemNos,
+        $auth,
+        $errors
+    );
+    $categoryDescriptionByCode = fetch_item_category_descriptions_long_cache(
+        $environment,
+        $selectedCompany,
+        $auth,
+        $errors
+    );
+
+    $omzetPerCategory = [];
     $currentYearKey = $today->format('Y');
 
     foreach ($salesLines as $row) {
@@ -964,105 +1087,130 @@ if ($section === 'table_omzet_productgroep') {
             continue;
         }
 
+        $categoryCode = trim((string) ($itemCategoryByNo[$itemNo] ?? ''));
+        if ($categoryCode === '') {
+            $categoryCode = 'Onbekend';
+        }
+        $categoryDescription = trim((string) ($categoryDescriptionByCode[$categoryCode] ?? ''));
+        $categoryLabel = $categoryCode;
+        if ($categoryCode !== 'Onbekend' && $categoryDescription !== '') {
+            $categoryLabel = $categoryCode . ' - ' . $categoryDescription;
+        }
+
         $itemLabel = $itemNo . ($itemDesc !== '' ? ' - ' . $itemDesc : '');
         $yearKey = $postingDate->format('Y');
         $monthKey = $postingDate->format('Y-m');
         $weekStartDate = $postingDate->modify('monday this week');
         $weekKey = $weekStartDate->format('Y-m-d');
 
-        if (!isset($omzetPerProduct[$itemLabel])) {
-            $omzetPerProduct[$itemLabel] = [
-                'label' => $itemLabel,
+        if (!isset($omzetPerCategory[$categoryCode])) {
+            $omzetPerCategory[$categoryCode] = [
+                'label' => $categoryLabel,
                 'currentYearTotal' => 0.0,
                 'years' => [],
             ];
         }
 
-        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey])) {
-            $omzetPerProduct[$itemLabel]['years'][$yearKey] = [
+        if (!isset($omzetPerCategory[$categoryCode]['years'][$yearKey])) {
+            $omzetPerCategory[$categoryCode]['years'][$yearKey] = [
                 'label' => $yearKey,
                 'total' => 0.0,
                 'months' => [],
             ];
         }
 
-        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey])) {
-            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey] = [
+        if (!isset($omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey])) {
+            $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey] = [
                 'label' => nl_month_year_label($postingDate),
                 'total' => 0.0,
                 'weeks' => [],
             ];
         }
 
-        if (!isset($omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
-            $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
+        if (!isset($omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey])) {
+            $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey] = [
                 'label' => nl_week_label($weekStartDate),
+                'total' => 0.0,
+                'products' => [],
+            ];
+        }
+
+        if (!isset($omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['products'][$itemLabel])) {
+            $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['products'][$itemLabel] = [
+                'label' => $itemLabel,
                 'total' => 0.0,
             ];
         }
 
-        $omzetPerProduct[$itemLabel]['years'][$yearKey]['total'] += $salesAmount;
-        $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['total'] += $salesAmount;
-        $omzetPerProduct[$itemLabel]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['total'] += $salesAmount;
+        $omzetPerCategory[$categoryCode]['years'][$yearKey]['total'] += $salesAmount;
+        $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['total'] += $salesAmount;
+        $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['total'] += $salesAmount;
+        $omzetPerCategory[$categoryCode]['years'][$yearKey]['months'][$monthKey]['weeks'][$weekKey]['products'][$itemLabel]['total'] += $salesAmount;
 
         if ($yearKey === $currentYearKey) {
-            $omzetPerProduct[$itemLabel]['currentYearTotal'] += $salesAmount;
+            $omzetPerCategory[$categoryCode]['currentYearTotal'] += $salesAmount;
         }
     }
 
-    foreach ($omzetPerProduct as &$productData) {
-        krsort($productData['years'], SORT_NATURAL);
-        foreach ($productData['years'] as &$yearData) {
+    foreach ($omzetPerCategory as &$categoryData) {
+        krsort($categoryData['years'], SORT_NATURAL);
+        foreach ($categoryData['years'] as &$yearData) {
             krsort($yearData['months'], SORT_NATURAL);
             foreach ($yearData['months'] as &$monthData) {
                 krsort($monthData['weeks'], SORT_NATURAL);
+                foreach ($monthData['weeks'] as &$weekData) {
+                    uasort($weekData['products'], function (array $a, array $b): int {
+                        return ((float) ($b['total'] ?? 0.0)) <=> ((float) ($a['total'] ?? 0.0));
+                    });
+                }
+                unset($weekData);
             }
             unset($monthData);
         }
         unset($yearData);
     }
-    unset($productData);
+    unset($categoryData);
 
-    uksort($omzetPerProduct, function (string $a, string $b) use ($omzetPerProduct): int {
-        return ($omzetPerProduct[$b]['currentYearTotal'] ?? 0) <=> ($omzetPerProduct[$a]['currentYearTotal'] ?? 0);
+    uksort($omzetPerCategory, function (string $a, string $b) use ($omzetPerCategory): int {
+        return ($omzetPerCategory[$b]['currentYearTotal'] ?? 0) <=> ($omzetPerCategory[$a]['currentYearTotal'] ?? 0);
     });
 
     ob_start();
     ?>
-    <div class="table-title">Omzet per product</div>
-    <?php if (empty($omzetPerProduct)): ?>
+    <div class="table-title">Omzet per artikelcategorie</div>
+    <?php if (empty($omzetPerCategory)): ?>
         <div class="small" style="padding:10px 12px;">Geen omzetdata beschikbaar.</div>
     <?php else: ?>
         <div style="padding:10px 12px; max-height: 520px; overflow-y: auto;">
             <div class="inbound-head">
-                <span>Product</span>
+                <span>Artikelcategorie</span>
                 <span class="inbound-values"><strong>Omzet dit jaar</strong></span>
             </div>
             <div class="inbound-tree">
-                <?php foreach ($omzetPerProduct as $productData): ?>
+                <?php foreach ($omzetPerCategory as $categoryData): ?>
                     <?php
                     $yearSeriesAsc = [];
-                    $yearsAsc = $productData['years'];
+                    $yearsAsc = $categoryData['years'];
                     ksort($yearsAsc, SORT_NATURAL);
                     foreach ($yearsAsc as $yearAscData) {
                         $yearSeriesAsc[] = (float) ($yearAscData['total'] ?? 0.0);
                     }
 
-                    $productYearRows = array_values($productData['years']);
-                    $latestYearValue = isset($productYearRows[0]) ? (float) ($productYearRows[0]['total'] ?? 0.0) : 0.0;
-                    $previousYearValue = isset($productYearRows[1]) ? (float) ($productYearRows[1]['total'] ?? 0.0) : null;
-                    $productTrendHtml = trend_arrow_strict_html($previousYearValue, $latestYearValue);
+                    $categoryYearRows = array_values($categoryData['years']);
+                    $latestYearValue = isset($categoryYearRows[0]) ? (float) ($categoryYearRows[0]['total'] ?? 0.0) : 0.0;
+                    $previousYearValue = isset($categoryYearRows[1]) ? (float) ($categoryYearRows[1]['total'] ?? 0.0) : null;
+                    $categoryTrendHtml = trend_arrow_strict_html($previousYearValue, $latestYearValue);
                     ?>
                     <details class="inbound-level-year">
                         <summary>
-                            <span class="inbound-label"><?= $productTrendHtml ?><?= html((string) $productData['label']) ?></span>
+                            <span class="inbound-label"><?= $categoryTrendHtml ?><?= html((string) $categoryData['label']) ?></span>
                             <span class="inbound-values">
                                 <?= sparkline_svg($yearSeriesAsc) ?>
-                                <strong><?= html(fmt_money((float) ($productData['currentYearTotal'] ?? 0.0))) ?></strong>
+                                <strong><?= html(fmt_money((float) ($categoryData['currentYearTotal'] ?? 0.0))) ?></strong>
                             </span>
                         </summary>
                         <div class="inbound-children">
-                            <?php $yearRows = array_values($productData['years']); ?>
+                            <?php $yearRows = array_values($categoryData['years']); ?>
                             <?php foreach ($yearRows as $yearIndex => $yearData): ?>
                                 <details class="inbound-level-year">
                                     <summary>
@@ -1103,19 +1251,33 @@ if ($section === 'table_omzet_productgroep') {
                                                 <div class="inbound-children">
                                                     <?php $weekRows = array_values($monthData['weeks']); ?>
                                                     <?php foreach ($weekRows as $weekIndex => $weekData): ?>
-                                                        <div class="inbound-row">
-                                                            <?php
-                                                            $weekValue = (float) ($weekData['total'] ?? 0.0);
-                                                            $nextWeekValue = isset($weekRows[$weekIndex + 1])
-                                                                ? (float) ($weekRows[$weekIndex + 1]['total'] ?? 0.0)
-                                                                : null;
-                                                            ?>
-                                                            <span
-                                                                class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
-                                                            <span class="inbound-values">
-                                                                <strong><?= html(fmt_money($weekValue)) ?></strong>
-                                                            </span>
-                                                        </div>
+                                                        <details class="inbound-level-month">
+                                                            <summary>
+                                                                <?php
+                                                                $weekValue = (float) ($weekData['total'] ?? 0.0);
+                                                                $nextWeekValue = isset($weekRows[$weekIndex + 1])
+                                                                    ? (float) ($weekRows[$weekIndex + 1]['total'] ?? 0.0)
+                                                                    : null;
+                                                                ?>
+                                                                <span
+                                                                    class="inbound-label"><?= trend_arrow_html($nextWeekValue, $weekValue) ?><?= html((string) $weekData['label']) ?></span>
+                                                                <span class="inbound-values">
+                                                                    <strong><?= html(fmt_money($weekValue)) ?></strong>
+                                                                </span>
+                                                            </summary>
+                                                            <div class="inbound-children">
+                                                                <?php $productRows = array_values($weekData['products'] ?? []); ?>
+                                                                <?php foreach ($productRows as $productData): ?>
+                                                                    <div class="inbound-row">
+                                                                        <span
+                                                                            class="inbound-label"><?= html((string) ($productData['label'] ?? '')) ?></span>
+                                                                        <span class="inbound-values">
+                                                                            <strong><?= html(fmt_money((float) ($productData['total'] ?? 0.0))) ?></strong>
+                                                                        </span>
+                                                                    </div>
+                                                                <?php endforeach; ?>
+                                                            </div>
+                                                        </details>
                                                     <?php endforeach; ?>
                                                 </div>
                                             </details>
