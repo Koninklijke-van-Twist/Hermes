@@ -5,6 +5,7 @@ error_reporting(E_ALL);
 if (function_exists('xdebug_disable')) {
     xdebug_disable();
 }
+require __DIR__ . "/auth.php";
 require __DIR__ . "/logincheck.php";
 require __DIR__ . "/odata.php";
 
