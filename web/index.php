@@ -806,28 +806,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             function renderError (target, message, config = null)
             {
                 const retryMarkup = config
-                    ? '<div><button type="button" class="warn-refresh">Opnieuw laden</button></div>'
+                    ? '<div><button type="button" class="warn-refresh">Opnieuw proberen</button></div>'
                     : '';
 
                 target.innerHTML = '<div class="warn">Data laden mislukt: ' + escapeHtml(message) + retryMarkup + '</div>';
-
-                if (!config)
-                {
-                    return;
-                }
-
-                const retryButton = target.querySelector('.warn-refresh');
-                if (!retryButton)
-                {
-                    return;
-                }
-
-                retryButton.addEventListener('click', async function ()
-                {
-                    retryButton.disabled = true;
-                    retryButton.textContent = 'Laden...';
-                    await loadSection(config);
-                });
             }
 
             function highlightLoadedCard (target)
@@ -1066,6 +1048,38 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
 
                 syncPeriodStateByLevel(config.section, level, target.value || 'avg');
+                loadSection(config);
+            });
+
+            contentEl.addEventListener('click', function (event)
+            {
+                const element = event.target;
+                if (!(element instanceof HTMLElement))
+                {
+                    return;
+                }
+
+                const retryButton = element.closest('.warn-refresh');
+                if (!(retryButton instanceof HTMLButtonElement))
+                {
+                    return;
+                }
+
+                const container = retryButton.closest('[id]');
+                if (!(container instanceof HTMLElement))
+                {
+                    return;
+                }
+
+                const config = sectionConfigById[container.id] || null;
+                if (!config)
+                {
+                    return;
+                }
+
+                event.preventDefault();
+                retryButton.disabled = true;
+                retryButton.textContent = 'Laden...';
                 loadSection(config);
             });
 

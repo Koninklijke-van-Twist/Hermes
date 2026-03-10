@@ -736,7 +736,7 @@ function render_with_errors(string $html, array $errors): string
 
     $out = '';
     foreach ($errors as $error) {
-        $out .= '<div class="warn">Dataset niet geladen: ' . html($error) . '</div>';
+        $out .= '<div class="warn">Dataset niet geladen: ' . html($error) . '<div><button type="button" class="warn-refresh">Opnieuw proberen</button></div></div>';
     }
 
     return $out . $html;
