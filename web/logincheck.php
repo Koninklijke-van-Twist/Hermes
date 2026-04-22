@@ -17,11 +17,19 @@ function is_trusted_requester(): bool
 if (!is_trusted_requester()) {
     require __DIR__ . "/../login/lib.php";
 
-    if (
-        !array_any($allowedUsers, function ($email) {
-            return $email == $_SESSION['user']['email'];
-        })
-    ) {
+    $currentEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    $isAllowedUser = false;
+
+    foreach ($allowedUsers as $emailKey => $value) {
+        // Supports both legacy ['user@domain'] and new ['user@domain' => [15, 40]] formats.
+        $allowedEmail = is_int($emailKey) ? (string) $value : (string) $emailKey;
+        if (strtolower(trim($allowedEmail)) === $currentEmail && $currentEmail !== '') {
+            $isAllowedUser = true;
+            break;
+        }
+    }
+
+    if (!$isAllowedUser) {
         require __DIR__ . "/../login/403.php";
         die();
     }

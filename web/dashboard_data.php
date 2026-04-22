@@ -26,7 +26,11 @@ if (!in_array($selectedCompany, $companies, true)) {
     $selectedCompany = $companies[0];
 }
 
+$allowedDepartmentCodes = allowed_departments_for_current_user();
 $departmentFilter = normalize((string) ($_GET['department_filter'] ?? $_GET['parts_filter'] ?? '15'));
+if (!empty($allowedDepartmentCodes) && $departmentFilter !== '' && !in_array($departmentFilter, $allowedDepartmentCodes, true)) {
+    $departmentFilter = '';
+}
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 $section = trim((string) ($_GET['section'] ?? ''));
 $period = trim((string) ($_GET['period'] ?? ''));
@@ -140,6 +144,34 @@ function matches_code_filter(array $row, array $fields, string $code): bool
     }
 
     return false;
+}
+
+function matches_allowed_department_codes(array $row, array $fields, array $allowedCodes): bool
+{
+    if (empty($allowedCodes)) {
+        return true;
+    }
+
+    foreach ($allowedCodes as $code) {
+        if (matches_code_filter($row, $fields, (string) $code)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function matches_department_scope(array $row, array $fields, string $selectedCode, array $allowedCodes): bool
+{
+    if ($selectedCode !== '') {
+        if (!empty($allowedCodes) && !in_array($selectedCode, $allowedCodes, true)) {
+            return false;
+        }
+
+        return matches_code_filter($row, $fields, $selectedCode);
+    }
+
+    return matches_allowed_department_codes($row, $fields, $allowedCodes);
 }
 
 function period_value(array $totals, string $period): float
@@ -772,13 +804,26 @@ if ($section === 'filter_options') {
         foreach (['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'] as $field) {
             $value = trim((string) ($row[$field] ?? ''));
             if ($value !== '') {
-                $departmentOptions[normalize($value)] = $value;
+                $normalizedValue = normalize($value);
+                if (!empty($allowedDepartmentCodes) && !in_array($normalizedValue, $allowedDepartmentCodes, true)) {
+                    continue;
+                }
+
+                $departmentOptions[$normalizedValue] = $value;
+            }
+        }
+    }
+
+    if (!empty($allowedDepartmentCodes)) {
+        foreach ($allowedDepartmentCodes as $allowedCode) {
+            if (!isset($departmentOptions[$allowedCode])) {
+                $departmentOptions[$allowedCode] = $allowedCode;
             }
         }
     }
 
     ksort($departmentOptions, SORT_NATURAL);
-    if ($departmentFilter !== '' && !isset($departmentOptions[$departmentFilter])) {
+    if ($departmentFilter !== '' && !isset($departmentOptions[$departmentFilter]) && empty($allowedDepartmentCodes)) {
         $departmentOptions[$departmentFilter] = $departmentFilter;
         ksort($departmentOptions, SORT_NATURAL);
     }
@@ -845,7 +890,7 @@ if ($section === 'card_omzet_parts') {
     $weekLabelsByMonth = [];
 
     foreach ($valueEntries as $row) {
-        if (!matches_code_filter($row, ['AuxiliaryIndex1'], $departmentFilter)) {
+        if (!matches_department_scope($row, ['AuxiliaryIndex1'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -913,7 +958,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
         $weekLabelsByMonth = [];
 
         foreach ($salesOrderLines as $line) {
-            if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+            if (!matches_department_scope($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
                 continue;
             }
 
@@ -969,7 +1014,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     $weekLabelsByMonth = [];
 
     foreach ($salesOrderLines as $line) {
-        if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -1060,7 +1105,7 @@ if ($section === 'table_omzet_productgroep') {
 
     $relevantItemNos = [];
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -1095,7 +1140,7 @@ if ($section === 'table_omzet_productgroep') {
     $currentYearKey = $today->format('Y');
 
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -1365,7 +1410,7 @@ if ($section === 'table_top_products') {
 
     $soldByItem = [];
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -1527,7 +1572,7 @@ if ($section === 'table_top_customers') {
     $preparedRows = [];
 
     foreach ($salesLines as $row) {
-        if (!matches_code_filter($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 
@@ -1720,7 +1765,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_stats' || $section ==
             continue;
         }
 
-        if (!matches_code_filter($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter)) {
+        if (!matches_department_scope($line, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
             continue;
         }
 

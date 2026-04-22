@@ -25,7 +25,16 @@ function html(string $value): string
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
+$allowedDepartmentCodes = allowed_departments_for_current_user();
 $departmentFilter = trim((string) ($_GET['department_filter'] ?? $_GET['parts_filter'] ?? '15'));
+if (!empty($allowedDepartmentCodes) && $departmentFilter !== '') {
+    $normalizedDepartmentFilter = strtoupper($departmentFilter);
+    if (!in_array($normalizedDepartmentFilter, $allowedDepartmentCodes, true)) {
+        $departmentFilter = '';
+    } else {
+        $departmentFilter = $normalizedDepartmentFilter;
+    }
+}
 $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 ?>
 <!doctype html>
