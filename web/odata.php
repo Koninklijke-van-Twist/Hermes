@@ -87,7 +87,7 @@ function odata_get_json(string $url, array $auth): array
 
 function build_cache_key(string $url, array $auth): string
 {
-    require __DIR__ . "/auth.php";
+    $environment = (string) ($GLOBALS['environment'] ?? '');
     $user = (string) ($auth['user'] ?? '');
     return $url . '|' . $user . '|' . $environment;
 }
