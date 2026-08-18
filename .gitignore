@@ -4,3 +4,6 @@ BC Structure Metadata.txt
 web/cache/
 
 web/auth.php
+
+web/analytics/analytics.sqlite
+web/analytics/analytics.sqlite-*
