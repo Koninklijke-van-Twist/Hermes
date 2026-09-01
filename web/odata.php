@@ -3,23 +3,56 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
-function odata_get_all(string $url, array $auth, $ttlSeconds = 3600): array
+require_once __DIR__ . "/odata_sections.php";
+
+function odata_nightly_cache_ttl(): int
 {
+    return 48 * 3600;
+}
+
+function odata_live_fetch_enabled(): bool
+{
+    return !empty($GLOBALS['ODATA_LIVE_FETCH']);
+}
+
+function odata_enable_live_fetch(bool $enabled = true): void
+{
+    $GLOBALS['ODATA_LIVE_FETCH'] = $enabled;
+}
+
+function odata_company_url(string $environment, string $company, string $entity, array $params = []): string
+{
+    global $baseUrl;
+    $encCompany = rawurlencode($company);
+    $base = $baseUrl . $environment . "/ODataV4/Company('" . $encCompany . "')/";
+    $query = '';
+    if (!empty($params)) {
+        $query = '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+    }
+    return $base . $entity . $query;
+}
+
+function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
+{
+    if ($ttlSeconds === null) {
+        $ttlSeconds = odata_nightly_cache_ttl();
+    }
     $ttlSeconds = max(1, (int) $ttlSeconds);
     maybe_cleanup_expired_cache_files();
 
     $cacheKey = build_cache_key($url, $auth);
     $cachePath = cache_path_for_key($cacheKey);
+    $live = odata_live_fetch_enabled();
 
-    if (is_file($cachePath)) {
-        $cached = read_cache_payload($cachePath, $ttlSeconds);
-        if ($cached['valid']) {
-            return $cached['data'];
+    if (!$live) {
+        if (is_file($cachePath)) {
+            $cached = read_cache_payload($cachePath, $ttlSeconds, true);
+            if ($cached['valid']) {
+                return $cached['data'];
+            }
         }
 
-        if ($cached['delete']) {
-            @unlink($cachePath);
-        }
+        throw new Exception("geen nightly-cache");
     }
 
     $all = [];
@@ -46,6 +79,8 @@ function odata_get_json(string $url, array $auth): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => 30,
+        CURLOPT_TIMEOUT => 300,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
         ],
@@ -126,8 +161,9 @@ function maybe_cleanup_expired_cache_files(): void
         return;
     }
 
+    $fallbackMaxAge = 7 * 86400;
     foreach ($entries as $entry) {
-        if ($entry === '.' || $entry === '..' || $entry === '.cleanup_marker') {
+        if ($entry === '.' || $entry === '..' || $entry === '.cleanup_marker' || $entry === '.nightly.lock') {
             continue;
         }
 
@@ -136,13 +172,6 @@ function maybe_cleanup_expired_cache_files(): void
             continue;
         }
 
-        $cached = read_cache_payload($path, 0);
-        if ($cached['delete']) {
-            @unlink($path);
-            continue;
-        }
-
-        $fallbackMaxAge = 86400;
         $age = $now - (int) @filemtime($path);
         if ($age > $fallbackMaxAge) {
             @unlink($path);
@@ -150,7 +179,7 @@ function maybe_cleanup_expired_cache_files(): void
     }
 }
 
-function read_cache_payload(string $path, int $fallbackTtlSeconds): array
+function read_cache_payload(string $path, int $fallbackTtlSeconds, bool $allowStale = false): array
 {
     $raw = @file_get_contents($path);
     if ($raw === false || $raw === '') {
@@ -164,11 +193,11 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds): array
 
     if (isset($payload['_meta']) && isset($payload['data']) && is_array($payload['data'])) {
         $expiresAt = (int) ($payload['_meta']['expires_at'] ?? 0);
-        if ($expiresAt > 0 && time() <= $expiresAt) {
+        if ($expiresAt <= 0 || time() <= $expiresAt || $allowStale) {
             return ['valid' => true, 'delete' => false, 'data' => $payload['data']];
         }
 
-        return ['valid' => false, 'delete' => true, 'data' => []];
+        return ['valid' => false, 'delete' => false, 'data' => $payload['data']];
     }
 
     if ($fallbackTtlSeconds > 0) {
@@ -177,7 +206,15 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds): array
             return ['valid' => true, 'delete' => false, 'data' => $payload];
         }
 
-        return ['valid' => false, 'delete' => true, 'data' => []];
+        if ($allowStale) {
+            return ['valid' => true, 'delete' => false, 'data' => $payload];
+        }
+
+        return ['valid' => false, 'delete' => false, 'data' => $payload];
+    }
+
+    if ($allowStale) {
+        return ['valid' => true, 'delete' => false, 'data' => $payload];
     }
 
     return ['valid' => false, 'delete' => false, 'data' => []];
@@ -306,7 +343,6 @@ function odata_cache_status_payload(): array
     $cacheDir = cache_base_dir();
     $totalBytes = 0;
     $entriesPayload = [];
-    $now = time();
 
     if (is_dir($cacheDir)) {
         $iterator = new FilesystemIterator($cacheDir, FilesystemIterator::SKIP_DOTS);
@@ -327,10 +363,6 @@ function odata_cache_status_payload(): array
             }
 
             $expiresAt = (int) ($meta['expires_at'] ?? 0);
-            if ($expiresAt > 0 && $expiresAt <= $now) {
-                @unlink($path);
-                continue;
-            }
 
             $sizeBytes = (int) $fileInfo->getSize();
             $totalBytes += $sizeBytes;

@@ -7,13 +7,9 @@ if (function_exists('xdebug_disable')) {
 }
 require __DIR__ . "/auth.php";
 require __DIR__ . "/logincheck.php";
-require __DIR__ . "/odata.php";
+require_once __DIR__ . "/odata.php";
 
-$companies = [
-    "Koninklijke van Twist",
-    "Hunter van Twist",
-    "KVT Gas",
-];
+$companies = odata_dashboard_companies();
 
 $selectedCompany = $_GET['company'] ?? $companies[0];
 if (!in_array($selectedCompany, $companies, true)) {

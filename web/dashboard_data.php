@@ -7,7 +7,8 @@ if (function_exists('xdebug_disable')) {
 }
 require __DIR__ . "/auth.php";
 require __DIR__ . "/logincheck.php";
-require __DIR__ . "/odata.php";
+require_once __DIR__ . "/odata.php";
+require_once __DIR__ . "/odata_sections.php";
 
 if (function_exists('session_status') && function_exists('session_write_close') && session_status() === PHP_SESSION_ACTIVE) {
     session_write_close();
@@ -15,11 +16,7 @@ if (function_exists('session_status') && function_exists('session_write_close') 
 
 header('Content-Type: application/json; charset=utf-8');
 
-$companies = [
-    "Koninklijke van Twist",
-    "Hunter van Twist",
-    "KVT Gas",
-];
+$companies = odata_dashboard_companies();
 
 $selectedCompany = $_GET['company'] ?? $companies[0];
 if (!in_array($selectedCompany, $companies, true)) {
@@ -39,8 +36,6 @@ $selectedMonthInput = trim((string) ($_GET['selected_month'] ?? 'avg'));
 $selectedWeekInput = trim((string) ($_GET['selected_week'] ?? 'avg'));
 
 $today = new DateTimeImmutable('today');
-$fromYear = (int) $today->format('Y') - 2;
-$fromDate = $today->setDate($fromYear, 1, 1)->format('Y-m-d');
 $weekStart = $today->modify('monday this week');
 $monthStart = $today->modify('first day of this month');
 $yearStart = $today->setDate((int) $today->format('Y'), 1, 1);
@@ -51,18 +46,6 @@ function json_response(array $payload, int $statusCode = 200): void
     http_response_code($statusCode);
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
-}
-
-function odata_company_url(string $environment, string $company, string $entity, array $params = []): string
-{
-    global $baseUrl;
-    $encCompany = rawurlencode($company);
-    $base = $baseUrl . $environment . "/ODataV4/Company('" . $encCompany . "')/";
-    $query = '';
-    if (!empty($params)) {
-        $query = '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
-    }
-    return $base . $entity . $query;
 }
 
 function html(string $value): string
@@ -608,24 +591,27 @@ function render_period_metric_rows(array $selectionResult, callable $formatter):
     return (string) ob_get_clean();
 }
 
-function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors, ?int $ttlSeconds = null): array
+function odata_fetch_safe(string $environment, string $company, string $entity, array $params, array $auth, array &$errors): array
 {
     try {
         $url = odata_company_url($environment, $company, $entity, $params);
-        if ($ttlSeconds === null) {
-            $hour = 3600;
-            $ttlSeconds = $hour * 5;
-        }
-        return odata_get_all($url, $auth, $ttlSeconds);
+        return odata_get_all($url, $auth);
     } catch (Throwable $e) {
         $errors[] = $entity . ': ' . $e->getMessage();
         return [];
     }
 }
 
-function odata_quote_string(string $value): string
+function odata_fetch_source_safe(string $sourceId, string $environment, string $company, array $auth, array &$errors): array
 {
-    return "'" . str_replace("'", "''", $value) . "'";
+    try {
+        $source = odata_source($sourceId);
+    } catch (Throwable $e) {
+        $errors[] = $sourceId . ': ' . $e->getMessage();
+        return [];
+    }
+
+    return odata_fetch_safe($environment, $company, $source['entity'], $source['params'], $auth, $errors);
 }
 
 function fetch_item_categories_for_items(
@@ -643,36 +629,16 @@ function fetch_item_categories_for_items(
         return [];
     }
 
+    $wanted = array_fill_keys($itemNos, true);
+    $rows = odata_fetch_source_safe('AppItemCard', $environment, $company, $auth, $errors);
     $categoryByItemNo = [];
-    $chunkSize = 25;
-    $chunks = array_chunk($itemNos, $chunkSize);
-    foreach ($chunks as $chunk) {
-        $clauses = [];
-        foreach ($chunk as $itemNo) {
-            $clauses[] = 'No eq ' . odata_quote_string($itemNo);
+    foreach ($rows as $row) {
+        $itemNo = trim((string) ($row['No'] ?? ''));
+        if ($itemNo === '' || !isset($wanted[$itemNo])) {
+            continue;
         }
 
-        $filter = implode(' or ', $clauses);
-        $rows = odata_fetch_safe(
-            $environment,
-            $company,
-            'AppItemCard',
-            [
-                '$select' => 'No,Item_Category_Code',
-                '$filter' => $filter,
-            ],
-            $auth,
-            $errors
-        );
-
-        foreach ($rows as $row) {
-            $itemNo = trim((string) ($row['No'] ?? ''));
-            if ($itemNo === '') {
-                continue;
-            }
-
-            $categoryByItemNo[$itemNo] = trim((string) ($row['Item_Category_Code'] ?? ''));
-        }
+        $categoryByItemNo[$itemNo] = trim((string) ($row['Item_Category_Code'] ?? ''));
     }
 
     return $categoryByItemNo;
@@ -684,18 +650,7 @@ function fetch_item_category_descriptions_long_cache(
     array $auth,
     array &$errors
 ): array {
-    $day = 86400;
-    $rows = odata_fetch_safe(
-        $environment,
-        $company,
-        'ItemCategories',
-        [
-            '$select' => 'Code,Description',
-        ],
-        $auth,
-        $errors,
-        $day * 14
-    );
+    $rows = odata_fetch_source_safe('ItemCategories', $environment, $company, $auth, $errors);
 
     $descriptionsByCode = [];
     foreach ($rows as $row) {
@@ -725,36 +680,16 @@ function fetch_customer_names_for_nos(
         return [];
     }
 
+    $wanted = array_fill_keys($customerNos, true);
+    $rows = odata_fetch_source_safe('AppCustomerCard', $environment, $company, $auth, $errors);
     $nameByCustomerNo = [];
-    $chunkSize = 25;
-    $chunks = array_chunk($customerNos, $chunkSize);
-    foreach ($chunks as $chunk) {
-        $clauses = [];
-        foreach ($chunk as $customerNo) {
-            $clauses[] = 'No eq ' . odata_quote_string($customerNo);
+    foreach ($rows as $row) {
+        $customerNo = trim((string) ($row['No'] ?? ''));
+        if ($customerNo === '' || !isset($wanted[$customerNo])) {
+            continue;
         }
 
-        $filter = implode(' or ', $clauses);
-        $rows = odata_fetch_safe(
-            $environment,
-            $company,
-            'AppCustomerCard',
-            [
-                '$select' => 'No,Name',
-                '$filter' => $filter,
-            ],
-            $auth,
-            $errors
-        );
-
-        foreach ($rows as $row) {
-            $customerNo = trim((string) ($row['No'] ?? ''));
-            if ($customerNo === '') {
-                continue;
-            }
-
-            $nameByCustomerNo[$customerNo] = trim((string) ($row['Name'] ?? ''));
-        }
+        $nameByCustomerNo[$customerNo] = trim((string) ($row['Name'] ?? ''));
     }
 
     return $nameByCustomerNo;
@@ -776,28 +711,9 @@ function render_with_errors(string $html, array $errors): string
 
 if ($section === 'filter_options') {
     $errors = [];
-    $salesQuotes = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesQuotes',
-        [
-            '$select' => 'Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code,Posting_Date',
-            '$filter' => "Posting_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $salesQuotes = odata_fetch_source_safe('SalesQuotes', $environment, $selectedCompany, $auth, $errors);
 
-    $purchaseHdrVendor = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'Power_BI_Purchase_Hdr_Vendor',
-        [
-            '$select' => 'Vendor_No,Name',
-        ],
-        $auth,
-        $errors
-    );
+    $purchaseHdrVendor = odata_fetch_source_safe('Power_BI_Purchase_Hdr_Vendor', $environment, $selectedCompany, $auth, $errors);
 
     $departmentOptions = [];
     foreach ($salesQuotes as $row) {
@@ -870,17 +786,7 @@ if ($section === 'filter_options') {
 
 if ($section === 'card_omzet_parts') {
     $errors = [];
-    $valueEntries = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'ValueEntries',
-        [
-            '$select' => 'Posting_Date,Sales_Amount_Actual,AuxiliaryIndex1',
-            '$filter' => "Posting_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $valueEntries = odata_fetch_source_safe('ValueEntries', $environment, $selectedCompany, $auth, $errors);
 
     $yearValues = [];
     $monthValues = [];
@@ -937,17 +843,7 @@ if ($section === 'card_omzet_parts') {
 
 if ($section === 'card_order_intake' || $section === 'card_lead_time') {
     $errors = [];
-    $salesOrderLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesOrderSalesLines',
-        [
-            '$select' => 'LVS_Order_Intake_Date,Line_Amount,Shipment_Date,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "LVS_Order_Intake_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $salesOrderLines = odata_fetch_source_safe('SalesOrderSalesLines', $environment, $selectedCompany, $auth, $errors);
 
     if ($section === 'card_order_intake') {
         $yearValues = [];
@@ -1091,17 +987,7 @@ if ($section === 'card_order_intake' || $section === 'card_lead_time') {
 
 if ($section === 'table_omzet_productgroep') {
     $errors = [];
-    $salesLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesLines',
-        [
-            '$select' => 'Shipment_Date,No,Description,Type,Line_Amount,Quantity,Outstanding_Quantity,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "Shipment_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $salesLines = odata_fetch_source_safe('SalesLines', $environment, $selectedCompany, $auth, $errors);
 
     $relevantItemNos = [];
     foreach ($salesLines as $row) {
@@ -1396,17 +1282,7 @@ if ($section === 'table_top_products') {
     }
 
     $errors = [];
-    $salesLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesLines',
-        [
-            '$select' => 'Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,KVT_Total_Costs_Line_LCY,KVT_Margin,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "Shipment_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $salesLines = odata_fetch_source_safe('SalesLines', $environment, $selectedCompany, $auth, $errors);
 
     $soldByItem = [];
     foreach ($salesLines as $row) {
@@ -1556,17 +1432,7 @@ if ($section === 'table_top_customers') {
     }
 
     $errors = [];
-    $salesLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'SalesLines',
-        [
-            '$select' => 'Document_No,Shipment_Date,Type,Quantity,Outstanding_Quantity,Line_Amount,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "Shipment_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $salesLines = odata_fetch_source_safe('SalesLines', $environment, $selectedCompany, $auth, $errors);
 
     $customerNos = [];
     $preparedRows = [];
@@ -1717,29 +1583,9 @@ if ($section === 'table_top_customers') {
 
 if ($section === 'inbound_totals' || $section === 'inbound_stats' || $section === 'inbound_latest') {
     $errors = [];
-    $purchaseOrderLines = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'AppPurchaseOrderPurchLines',
-        [
-            '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Unit_Cost_LCY,Unit_Price_LCY,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-            '$filter' => "Order_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $purchaseOrderLines = odata_fetch_source_safe('AppPurchaseOrderPurchLines', $environment, $selectedCompany, $auth, $errors);
 
-    $purchaseOrders = odata_fetch_safe(
-        $environment,
-        $selectedCompany,
-        'AppPurchaseOrder',
-        [
-            '$select' => 'No,Buy_from_Vendor_No,Order_Date',
-            '$filter' => "Order_Date ge $fromDate",
-        ],
-        $auth,
-        $errors
-    );
+    $purchaseOrders = odata_fetch_source_safe('AppPurchaseOrder', $environment, $selectedCompany, $auth, $errors);
 
     $purchaseOrderHeaderMap = [];
     foreach ($purchaseOrders as $order) {
