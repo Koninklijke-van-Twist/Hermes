@@ -136,11 +136,13 @@ function odata_mimir_is_outage(Throwable $exception): bool
     if (strpos($message, 'Mímir cURL error:') === 0) {
         return true;
     }
-    if (preg_match('/^Mímir HTTP (\d+):/', $message, $match) === 1) {
-        $code = (int) $match[1];
-        return $code >= 500 && $code <= 599;
+    if (strpos($message, 'Mímir HTTP ') === 0) {
+        return true;
     }
     if (strpos($message, 'Mímir gaf ongeldige JSON terug.') === 0) {
+        return true;
+    }
+    if (strpos($message, 'Mímir error:') === 0) {
         return true;
     }
     return false;
@@ -654,11 +656,7 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     $decoded = json_decode($raw, true);
     if ($code < 200 || $code >= 300) {
         $message = is_array($decoded) ? (string) ($decoded['error'] ?? $raw) : $raw;
-        $exception = new Exception('Mímir HTTP ' . $code . ': ' . $message);
-        if ($code >= 500 && $code <= 599) {
-            odata_mimir_fail($exception);
-        }
-        throw $exception;
+        odata_mimir_fail(new Exception('Mímir HTTP ' . $code . ': ' . $message));
     }
     if (!is_array($decoded)) {
         odata_mimir_fail(new Exception('Mímir gaf ongeldige JSON terug.'));
@@ -666,7 +664,7 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     $errorField = $decoded['error'] ?? null;
     if ($errorField !== null && $errorField !== '' && $errorField !== false) {
         $message = is_string($errorField) ? $errorField : (string) json_encode($errorField, JSON_UNESCAPED_UNICODE);
-        throw new Exception('Mímir error: ' . $message);
+        odata_mimir_fail(new Exception('Mímir error: ' . $message));
     }
     return $decoded;
 }
