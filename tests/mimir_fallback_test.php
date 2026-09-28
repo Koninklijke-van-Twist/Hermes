@@ -25,6 +25,14 @@ $GLOBALS['HERMES_ODATA_BC_FETCH'] = static function (string $url, array $auth, i
     ];
     if (preg_match('#/([^/]+)/ODataV4/Company(?:\\?|$)#', $url, $envMatch) === 1) {
         $envName = rawurldecode($envMatch[1]);
+        $throwEnvs = $GLOBALS['HERMES_ODATA_BC_FETCH_THROW_ENVS'] ?? [];
+        if (is_array($throwEnvs)) {
+            foreach ($throwEnvs as $throwEnv) {
+                if (strcasecmp($envName, (string) $throwEnv) === 0) {
+                    throw new Exception('geen nightly-cache');
+                }
+            }
+        }
         if (strcasecmp($envName, 'Sandbox') === 0) {
             return [['Name' => 'Sandbox Only']];
         }
@@ -292,6 +300,128 @@ $directCall = $calls[count($calls) - 1] ?? null;
 if (($directRows[0]['No'] ?? '') !== 'WO-1' || !is_array($directCall) || $directCall['url'] !== $directOnlyUrl) {
     fail('lege $mimirApi moet de oude directe route ongewijzigd gebruiken: ' . json_encode($directCall));
 }
+
+$savedAuthList = $auth_list;
+$auth_list = [
+    'Production' => ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'],
+    'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'],
+];
+$GLOBALS['HERMES_ODATA_BC_FETCH_THROW_ENVS'] = ['Sandbox'];
+$partialRows = odata_direct_companies_as_rows(null);
+$partialNames = [];
+foreach ($partialRows as $partialRow) {
+    $partialNames[] = (string) ($partialRow['Name'] ?? '');
+}
+sort($partialNames);
+if ($partialNames !== ['Hunter van Twist', 'KVT Gas', 'Koninklijke van Twist']) {
+    fail('een falend environment mag de andere company-lijsten niet wissen: ' . json_encode($partialNames));
+}
+$GLOBALS['HERMES_ODATA_BC_FETCH_THROW_ENVS'] = ['Production', 'Sandbox'];
+$allEnvsFailed = null;
+try {
+    odata_direct_companies_as_rows(null);
+} catch (Throwable $exception) {
+    $allEnvsFailed = $exception;
+}
+if (!$allEnvsFailed instanceof Throwable || strpos($allEnvsFailed->getMessage(), 'geen nightly-cache') === false) {
+    fail('als elk environment faalt moet de laatste fout terugkomen');
+}
+unset($GLOBALS['HERMES_ODATA_BC_FETCH_THROW_ENVS']);
+$auth_list = $savedAuthList;
+
+$httpPort = 18948;
+$httpModeFile = sys_get_temp_dir() . '/hermes-mimir-http-mode-' . getmypid();
+$httpMock = sys_get_temp_dir() . '/hermes-mimir-http-mock-' . getmypid() . '.php';
+file_put_contents($httpMock, "<?php\n\$mode = trim((string) @file_get_contents(" . var_export($httpModeFile, true) . "));\nheader('Content-Type: application/json');\nif (\$mode === '400') {\n    http_response_code(400);\n    echo json_encode(['error' => 'bad request']);\n    return;\n}\nif (\$mode === 'error') {\n    http_response_code(200);\n    echo json_encode(['error' => 'company unknown']);\n    return;\n}\nif (\$mode === '502') {\n    http_response_code(502);\n    echo json_encode(['error' => 'upstream']);\n    return;\n}\nhttp_response_code(500);\necho json_encode(['error' => 'unconfigured mock']);\n");
+$httpServer = proc_open(
+    [PHP_BINARY, '-S', '127.0.0.1:' . $httpPort, $httpMock],
+    [
+        1 => ['file', '/dev/null', 'w'],
+        2 => ['file', '/dev/null', 'w'],
+    ],
+    $httpPipes,
+    sys_get_temp_dir()
+);
+if (!is_resource($httpServer)) {
+    fail('Mímir-mockserver start niet');
+}
+register_shutdown_function(static function () use ($httpServer, $httpMock, $httpModeFile): void {
+    if (is_resource($httpServer)) {
+        proc_terminate($httpServer);
+        proc_close($httpServer);
+    }
+    @unlink($httpMock);
+    @unlink($httpModeFile);
+});
+$httpReady = false;
+for ($attempt = 0; $attempt < 50; $attempt++) {
+    $socket = @fsockopen('127.0.0.1', $httpPort, $errno, $errstr, 0.2);
+    if (is_resource($socket)) {
+        fclose($socket);
+        $httpReady = true;
+        break;
+    }
+    usleep(100000);
+}
+if (!$httpReady) {
+    fail('Mímir-mockserver kwam niet online');
+}
+
+$mimirApi = 'mimir_test_key_should_not_leak';
+$mimirBase = 'http://127.0.0.1:' . $httpPort;
+$probeUrl = 'https://mimir.invalid/Production/ODataV4/Company(\'KVT%20Gas\')/AppWerkorders?$select=No';
+
+file_put_contents($httpModeFile, '400');
+odata_mimir_circuit_reset();
+$callsBeforeClient = count($calls);
+$loggedBeforeClient = fallback_count();
+$clientError = null;
+try {
+    odata_get_all($probeUrl, $auth, 30);
+} catch (Throwable $exception) {
+    $clientError = $exception;
+}
+if (!$clientError instanceof Throwable || strpos($clientError->getMessage(), 'Mímir HTTP 400:') !== 0) {
+    fail('HTTP 400 moet als requestfout terugkomen: ' . ($clientError instanceof Throwable ? $clientError->getMessage() : 'geen'));
+}
+if (odata_mimir_circuit_open() || count($calls) !== $callsBeforeClient || fallback_count() !== $loggedBeforeClient) {
+    fail('HTTP 4xx mag het circuit niet openen en niet terugvallen op BC');
+}
+
+file_put_contents($httpModeFile, 'error');
+odata_mimir_circuit_reset();
+$payloadError = null;
+try {
+    odata_get_all($probeUrl, $auth, 30);
+} catch (Throwable $exception) {
+    $payloadError = $exception;
+}
+if (!$payloadError instanceof Throwable || strpos($payloadError->getMessage(), 'Mímir error:') !== 0) {
+    fail('HTTP 200 met error-veld moet als requestfout terugkomen: ' . ($payloadError instanceof Throwable ? $payloadError->getMessage() : 'geen'));
+}
+if (odata_mimir_circuit_open() || count($calls) !== $callsBeforeClient || fallback_count() !== $loggedBeforeClient) {
+    fail('HTTP 200 met error-veld mag het circuit niet openen en niet terugvallen op BC');
+}
+
+file_put_contents($httpModeFile, '502');
+odata_mimir_circuit_reset();
+$upstreamRows = odata_get_all($probeUrl, $auth, 30);
+if (($upstreamRows[0]['No'] ?? '') !== 'WO-1' || !odata_mimir_circuit_open()) {
+    fail('HTTP 502 moet terugvallen op directe BC en het circuit openen');
+}
+if (fallback_count() !== $loggedBeforeClient + 1) {
+    fail('HTTP 502 mag maar één keer een fallback loggen');
+}
+if (strpos(fallback_log(), 'mimir_test_key_should_not_leak') !== false) {
+    fail('fallback-log bevat de Mímir-sleutel');
+}
+$afterUpstream = odata_get_all($probeUrl, $auth, 30);
+if (($afterUpstream[0]['No'] ?? '') !== 'WO-1' || fallback_count() !== $loggedBeforeClient + 1) {
+    fail('na een open circuit mag een volgende call geen extra fallback loggen');
+}
+odata_mimir_circuit_reset();
+$mimirApi = '';
+$mimirBase = 'http://127.0.0.1:9';
 
 $tmpAuth = sys_get_temp_dir() . '/hermes-auth-fallback-' . getmypid() . '.php';
 file_put_contents($tmpAuth, <<<'PHP'
