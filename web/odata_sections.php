@@ -26,7 +26,7 @@ function odata_sources(?string $fromDate = null): array
         'SalesQuotes' => [
             'entity' => 'SalesQuotes',
             'params' => [
-                '$select' => 'Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code,Posting_Date',
+                '$select' => 'Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
                 '$filter' => "Posting_Date ge $fromDate",
             ],
         ],
@@ -78,7 +78,7 @@ function odata_sources(?string $fromDate = null): array
         'AppPurchaseOrderPurchLines' => [
             'entity' => 'AppPurchaseOrderPurchLines',
             'params' => [
-                '$select' => 'Document_No,Order_Date,Type,No,Description,Quantity,Direct_Unit_Cost,Unit_Cost_LCY,Unit_Price_LCY,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+                '$select' => 'Document_No,Order_Date,Type,Quantity,Direct_Unit_Cost,Unit_Cost_LCY,Unit_Price_LCY,Line_Amount,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
                 '$filter' => "Order_Date ge $fromDate",
             ],
         ],
