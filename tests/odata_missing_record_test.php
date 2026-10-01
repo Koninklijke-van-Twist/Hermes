@@ -79,6 +79,9 @@ if ($closed === null || (int) $closed['start']->diff($closed['end'])->format('%a
 if (odata_date_window_from_filter("No eq '233'") !== null) {
     fail('een sleutel-filter mag niet als datumvenster gelden');
 }
+if (odata_recovery_call_budget() !== 48) {
+    fail('standaard splitbudget is 48');
+}
 
 putenv('HERMES_DEV_TOP=9');
 $_GET['dev_top'] = '4';
@@ -272,6 +275,71 @@ if (!is_array($payload) || ($payload['_meta']['fetched'] ?? null) !== true || ($
     fail('de samengevoegde rijen horen als geslaagde cache: ' . json_encode($payload));
 }
 @unlink($split['created'][0]);
+
+file_put_contents($logFile, '');
+$budgetBad = $today->modify('+400 days')->format('Y-m-d');
+file_put_contents($badFile, $budgetBad);
+$GLOBALS['HERMES_ODATA_RECOVERY_BUDGET'] = 1;
+file_put_contents($modeFile, 'split');
+file_put_contents($hitFile, '');
+unset($GLOBALS['hermesDevTop']);
+odata_mimir_circuit_reset();
+$budgetUrl = odata_company_url('Production', 'KVT Gas', 'SalesOrderSalesLines', [
+    '$select' => 'No',
+    '$filter' => 'LVS_Order_Intake_Date ge ' . $start,
+]);
+$budgetDirect = odata_bc_url_from_odata_url($budgetUrl);
+$budgetCache = cache_path_for_key(build_cache_key($budgetDirect, $auth));
+@unlink($budgetCache);
+$beforeBudget = cache_files();
+$wasLive = odata_live_fetch_enabled();
+odata_enable_live_fetch(true);
+odata_enable_nightly_cache_persist(false);
+$budgetException = null;
+try {
+    odata_get_all($budgetUrl, $auth, 3600);
+} catch (ODataBcSemanticException $exception) {
+    $budgetException = $exception;
+} finally {
+    odata_enable_live_fetch($wasLive);
+    odata_enable_nightly_cache_persist(false);
+    unset($GLOBALS['HERMES_ODATA_RECOVERY_BUDGET']);
+    file_put_contents($badFile, $bad);
+}
+if (!$budgetException instanceof ODataBcSemanticException) {
+    fail('splitbudget moet de oorspronkelijke BC-fout doorgeven');
+}
+if (strpos($budgetException->getMessage(), 'Internal_RecordNotFound') === false) {
+    fail('doorgegeven fout moet RecordNotFound zijn: ' . $budgetException->getMessage());
+}
+if ((int) ($GLOBALS['HERMES_ODATA_RECOVERY_HITS'] ?? 0) < 1) {
+    fail('de linkerkant moet rijen hebben opgeleverd voor het budget op was');
+}
+if (odata_mimir_circuit_open() || $directCalls !== []) {
+    fail('splitbudget mag het circuit niet openen');
+}
+if (odata_take_partial_notice() !== null || strpos(test_log(), 'venster overgeslagen') !== false) {
+    fail('splitbudget mag het venster niet overslaan: ' . test_log());
+}
+$budgetCreated = array_values(array_diff(cache_files(), $beforeBudget));
+foreach ($budgetCreated as $created) {
+    $createdPayload = json_decode((string) file_get_contents($created), true);
+    $fetched = is_array($createdPayload) ? ($createdPayload['_meta']['fetched'] ?? null) : null;
+    @unlink($created);
+    if ($fetched === true) {
+        fail('deelresultaat mag niet als fetched=true blijven');
+    }
+}
+if (is_file($budgetCache)) {
+    $budgetPayload = json_decode((string) file_get_contents($budgetCache), true);
+    @unlink($budgetCache);
+    if (is_array($budgetPayload) && ($budgetPayload['_meta']['fetched'] ?? null) === true) {
+        fail('oorspronkelijke bron is toch fetched=true');
+    }
+}
+if (count(hit_lines()) < 2) {
+    fail('splitbudget moet minstens de linkerkant hebben opgehaald: ' . json_encode(hit_lines()));
+}
 
 file_put_contents($logFile, '');
 $capped = run_section('split', $start, 3);

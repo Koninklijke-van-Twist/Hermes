@@ -55,9 +55,12 @@ function consolelog($text)
  * komt niet uit een Hermes-sleutel. De BC-pagina zoekt tijdens het lezen zelf
  * een gerelateerde leverancier of projectplanningsregel op en breekt de hele
  * datumreeks af als die ontbreekt. Bij live-fetch (nightly of refresh=1) splitst
- * Hermes die reeks en slaat alleen het onleesbare dagvenster over. Timeouts,
- * HTTP 5xx en andere 4xx blijven een echte fout. Klant- en artikelnummers worden
- * niet per `No eq` opgezocht: een ontbrekend nummer is lokaal leeg.
+ * Hermes die reeks en slaat alleen een venster van minder dan twee dagen over.
+ * Raakt het splitbudget (48) op, dan gaat de oorspronkelijke BC-fout door; een
+ * deels geslaagde samenvoeging wordt dan niet als fetched=true bewaard.
+ * Timeouts, HTTP 5xx en andere 4xx blijven een echte fout. Klant- en
+ * artikelnummers worden niet per `No eq` opgezocht: een ontbrekend nummer is
+ * lokaal leeg.
  *
  * Lokaal testen: HERMES_DEV_TOP, $hermesDevTop in auth.php, ?dev_top= of
  * --dev-top= beperkt elke bron (en daarmee elke card op die bron) tot N rijen.
@@ -1664,6 +1667,18 @@ function odata_recovery_reset_if_top(): void
     unset($GLOBALS['HERMES_LAST_BC_PARTIAL']);
 }
 
+function odata_recovery_call_budget(): int
+{
+    $override = $GLOBALS['HERMES_ODATA_RECOVERY_BUDGET'] ?? null;
+    if (is_int($override) && $override >= 0) {
+        return $override;
+    }
+    if (is_string($override) && preg_match('/^\d+$/', $override) === 1) {
+        return (int) $override;
+    }
+    return 48;
+}
+
 function odata_rebuild_url(array $parts, array $query): string
 {
     $url = '';
@@ -1824,9 +1839,13 @@ function odata_finish_partial_notice(ODataBcSemanticException $exception): void
 
 /**
  * Live-fetch die stukloopt omdat de BC-pagina één gerelateerd record mist.
- * null = niet splitsen (aanroeper houdt de sectiefout). [] = dit venster overslaan.
+ * null = niet splitsen (aanroeper houdt de sectiefout).
+ * [] = venster te klein om te splitsen (minder dan twee dagen); dat venster mag weg.
+ * Is het splitbudget op, dan gaat de oorspronkelijke BC-fout door. Een deels
+ * geslaagde samenvoeging wordt dan niet als fetched=true bewaard.
  *
  * @return list<array<string, mixed>>|null
+ * @throws ODataBcSemanticException
  */
 function odata_attempt_date_recovery(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): ?array
 {
@@ -1855,9 +1874,8 @@ function odata_attempt_date_recovery(string $url, array $auth, int $ttlSeconds, 
         return [];
     }
     $calls = (int) ($GLOBALS['HERMES_ODATA_RECOVERY_CALLS'] ?? 0);
-    if ($calls >= 48) {
-        odata_recovery_skip($label . ' (splitbudget)');
-        return [];
+    if ($calls >= odata_recovery_call_budget()) {
+        throw $exception;
     }
     $GLOBALS['HERMES_ODATA_RECOVERY_CALLS'] = $calls + 1;
 
