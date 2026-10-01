@@ -1443,7 +1443,9 @@ function cache_path_for_key(string $cacheKey): string
 
 function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = ''): void
 {
-    $tmp = $path . ".tmp";
+    // Uniek per write: een vast .tmp laat gelijktijdige refreshes van dezelfde
+    // cache-key elkaars bestand afkappen vóór de rename.
+    $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
     $now = time();
     $payload = [
         '_meta' => [
@@ -1460,8 +1462,14 @@ function write_cache_json(string $path, array $data, int $ttlSeconds, string $so
         throw new Exception("Failed to encode cache JSON");
     }
 
-    file_put_contents($tmp, $json, LOCK_EX);
-    rename($tmp, $path);
+    if (file_put_contents($tmp, $json, LOCK_EX) === false) {
+        @unlink($tmp);
+        throw new Exception("Failed to write cache JSON");
+    }
+    if (!rename($tmp, $path)) {
+        @unlink($tmp);
+        throw new Exception("Failed to publish cache JSON");
+    }
 }
 
 function odata_cache_read_payload_meta(string $path): ?array

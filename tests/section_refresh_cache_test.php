@@ -24,12 +24,6 @@ function fail(string $message): void
     exit(1);
 }
 
-function cache_files(): array
-{
-    $files = glob(dirname(__DIR__) . '/web/cache/odata/*.json');
-    return is_array($files) ? $files : [];
-}
-
 if (odata_nightly_cache_persist_enabled()) {
     fail('persist staat standaard aan');
 }
@@ -80,16 +74,19 @@ $httpServer = proc_open(
 if (!is_resource($httpServer)) {
     fail('Mímir-mockserver start niet');
 }
-$createdCache = [];
-register_shutdown_function(static function () use ($httpServer, $httpMock, &$createdCache): void {
+$fixtureCachePath = '';
+register_shutdown_function(static function () use ($httpServer, $httpMock, &$fixtureCachePath): void {
     if (is_resource($httpServer)) {
         proc_terminate($httpServer);
         proc_close($httpServer);
     }
     @unlink($httpMock);
-    foreach ($createdCache as $path) {
-        if (is_string($path) && is_file($path)) {
-            @unlink($path);
+    if ($fixtureCachePath !== '') {
+        @unlink($fixtureCachePath);
+        foreach (glob($fixtureCachePath . '.*.tmp') ?: [] as $tmp) {
+            if (is_string($tmp)) {
+                @unlink($tmp);
+            }
         }
     }
 });
@@ -108,18 +105,24 @@ if (!$httpReady) {
 }
 
 $mimirBase = 'http://127.0.0.1:' . $httpPort;
-$url = odata_company_url('Production', 'KVT Gas', 'AppItemCard', ['$select' => 'No,Item_Category_Code']);
-$before = cache_files();
+$company = 'Refresh Co ' . getmypid() . '-' . bin2hex(random_bytes(4));
+$encodedCompany = rawurlencode($company);
+$url = odata_company_url('Production', $company, 'AppItemCard', ['$select' => 'No,Item_Category_Code']);
+if (strpos($url, "/Company('" . $encodedCompany . "')/AppItemCard") === false) {
+    fail('company-URL mist de unieke fixture: ' . $url);
+}
+$fixtureTarget = odata_direct_fetch_target($url, $auth);
+$fixtureCachePath = cache_path_for_key(build_cache_key($fixtureTarget['url'], $fixtureTarget['auth']));
+@unlink($fixtureCachePath);
 if (odata_mimir_timeout_seconds() === 7200 || odata_live_fetch_enabled()) {
     fail('een cache-miss op een gewone load mag niet de 7200s-timeout gebruiken');
 }
 $liveRows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
-$createdCache = array_values(array_diff(cache_files(), $before));
 if (($liveRows[0]['No'] ?? '') !== 'ITEM-1') {
     fail('Mímir gaf de artikelrij niet terug');
 }
-if (count($createdCache) !== 1) {
-    fail('een cache-miss moet de nightly-cache vullen, kreeg ' . count($createdCache));
+if (!is_file($fixtureCachePath)) {
+    fail('een cache-miss moet precies dit nightly-cachepad schrijven: ' . $fixtureCachePath);
 }
 
 odata_mimir_circuit_reset();
@@ -163,15 +166,14 @@ odata_mimir_circuit_reset();
 $mimirBase = 'http://127.0.0.1:' . $httpPort;
 odata_enable_section_refresh();
 $refreshRows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
-$createdCache = array_values(array_diff(cache_files(), $before));
 if (($refreshRows[0]['No'] ?? '') !== 'ITEM-1' || ($refreshRows[0]['Item_Category_Code'] ?? '') !== 'CAT') {
     fail('refresh gaf de Mímir-rijen niet terug aan de card');
 }
-if (count($createdCache) !== 1) {
-    fail('refresh moet één nightly-cachebestand schrijven, kreeg ' . count($createdCache));
+if (!is_file($fixtureCachePath)) {
+    fail('refresh moet het fixture-cachepad overschrijven: ' . $fixtureCachePath);
 }
 
-$stored = json_decode((string) file_get_contents($createdCache[0]), true);
+$stored = json_decode((string) file_get_contents($fixtureCachePath), true);
 if (!is_array($stored) || !isset($stored['_meta']) || !is_array($stored['_meta'])) {
     fail('cachebestand mist _meta');
 }
@@ -182,7 +184,7 @@ if ($expiresAt < $now + $expectedTtl - 5 || $expiresAt > $now + $expectedTtl + 5
     fail('cache-TTL wijkt af van nightly (' . $expiresAt . ')');
 }
 $sourceUrl = (string) ($stored['_meta']['source_url'] ?? '');
-if (strpos($sourceUrl, 'mimir.invalid') !== false || strpos($sourceUrl, "/Company('KVT%20Gas')/AppItemCard") === false) {
+if (strpos($sourceUrl, 'mimir.invalid') !== false || strpos($sourceUrl, "/Company('" . $encodedCompany . "')/AppItemCard") === false) {
     fail('cachepad gebruikt niet de BC-URL van nightly: ' . $sourceUrl);
 }
 if ((string) ($stored['data'][0]['No'] ?? '') !== 'ITEM-1') {
