@@ -10,6 +10,12 @@ require __DIR__ . "/logincheck.php";
 require_once __DIR__ . "/odata.php";
 require_once __DIR__ . "/odata_sections.php";
 
+$sectionRefresh = $_GET['refresh'] ?? '';
+if (is_string($sectionRefresh) && $sectionRefresh === '1') {
+    // Alleen deze knop. Gewone section-loads blijven op de korte timeout en de cache.
+    odata_enable_section_refresh();
+}
+
 if (function_exists('session_status') && function_exists('session_write_close') && session_status() === PHP_SESSION_ACTIVE) {
     session_write_close();
 }

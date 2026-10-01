@@ -906,7 +906,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 }
             }
 
-            async function loadSection (config)
+            async function loadSection (config, options)
             {
                 const target = document.getElementById(config.id);
                 if (!target)
@@ -914,11 +914,16 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     return;
                 }
 
+                const refresh = typeof options === 'object' && options !== null && options.refresh === true;
                 showSectionLoading(target, Boolean(config.large));
                 const params = buildRequestParams({ section: config.section }, config.section);
                 if (config.period)
                 {
                     params.set('period', config.period);
+                }
+                if (refresh)
+                {
+                    params.set('refresh', '1');
                 }
 
                 try
@@ -1085,7 +1090,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 event.preventDefault();
                 retryButton.disabled = true;
                 retryButton.textContent = 'Laden...';
-                loadSection(config);
+                loadSection(config, { refresh: true });
             });
 
             window.addEventListener('popstate', function ()

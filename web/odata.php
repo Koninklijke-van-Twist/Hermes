@@ -1109,28 +1109,89 @@ function odata_company_url(string $environment, string $company, string $entity,
     return $base . $entity . $query;
 }
 
+function odata_nightly_cache_persist_enabled(): bool
+{
+    return !empty($GLOBALS['ODATA_PERSIST_NIGHTLY_CACHE']);
+}
+
+function odata_enable_nightly_cache_persist(bool $enabled = true): void
+{
+    $GLOBALS['ODATA_PERSIST_NIGHTLY_CACHE'] = $enabled;
+}
+
+/**
+ * Expliciete dashboard-retry: lange live-fetch-timeouts én het resultaat
+ * in de nightly-filecache. Gewone page-loads zetten dit niet aan.
+ */
+function odata_enable_section_refresh(): void
+{
+    odata_enable_live_fetch(true);
+    odata_enable_nightly_cache_persist(true);
+    odata_apply_section_refresh_time_limit();
+}
+
+function odata_apply_section_refresh_time_limit(): void
+{
+    if (!odata_nightly_cache_persist_enabled()) {
+        return;
+    }
+
+    $seconds = odata_live_fetch_request_timeout_seconds();
+    set_time_limit($seconds);
+    ini_set('max_execution_time', (string) $seconds);
+}
+
+/**
+ * Zelfde URL en auth als de directe fallback, dus hetzelfde cachepad als nightly.
+ *
+ * @return array{url: string, auth: array}
+ */
+function odata_direct_fetch_target(string $url, array $auth): array
+{
+    $choice = odata_bc_environment_choice_from_url($url);
+    if (!empty($choice['specific'])) {
+        $directAuth = odata_bc_auth_for_specific_env($choice['env'], $auth) ?? $auth;
+    } else {
+        $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
+    }
+
+    return [
+        'url' => odata_bc_url_from_odata_url($url),
+        'auth' => $directAuth,
+    ];
+}
+
+function odata_persist_nightly_cache(string $url, array $auth, array $rows, int $ttlSeconds): void
+{
+    $target = odata_direct_fetch_target($url, $auth);
+    $ttlSeconds = max(1, $ttlSeconds);
+    $cacheKey = build_cache_key($target['url'], $target['auth']);
+    write_cache_json(cache_path_for_key($cacheKey), $rows, $ttlSeconds, $target['url']);
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
 {
     if ($ttlSeconds === null) {
         $ttlSeconds = odata_nightly_cache_ttl();
     }
     $ttlSeconds = max(0, (int) $ttlSeconds);
+    odata_apply_section_refresh_time_limit();
 
     if (odata_mimir_enabled()) {
         $mimirTtl = $ttlSeconds === 0 ? 3600 : $ttlSeconds;
         return odata_mimir_or_direct(
-            static function () use ($url, $mimirTtl): array {
-                // Mímir beheert de BC-cache (max_age); Hermes-filecache wordt overgeslagen.
-                return odata_mimir_fetch_all_impl($url, $mimirTtl);
+            static function () use ($url, $auth, $mimirTtl, $ttlSeconds): array {
+                $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
+                if (odata_nightly_cache_persist_enabled()) {
+                    // Zelfde TTL en pad als de nightly-filecache, zodat de volgende
+                    // page-load de sectie uit cache kan tonen.
+                    odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
+                }
+                return $rows;
             },
             static function () use ($url, $auth, $ttlSeconds): array {
-                $choice = odata_bc_environment_choice_from_url($url);
-                if (!empty($choice['specific'])) {
-                    $directAuth = odata_bc_auth_for_specific_env($choice['env'], $auth) ?? $auth;
-                } else {
-                    $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
-                }
-                return odata_get_all_direct(odata_bc_url_from_odata_url($url), $directAuth, $ttlSeconds);
+                $target = odata_direct_fetch_target($url, $auth);
+                return odata_get_all_direct($target['url'], $target['auth'], $ttlSeconds);
             }
         );
     }
