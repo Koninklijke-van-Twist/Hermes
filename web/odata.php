@@ -39,10 +39,13 @@ function consolelog($text)
  * Mímir-proxy: als $mimirApi in auth.php staat, lezen gewone page-loads eerst de
  * lokale nightly-filecache. Mímir wordt alleen aangeroepen bij een cache-miss,
  * bij een expliciete retry (refresh=1) of tijdens nightly (live-fetch).
- * Faalt die aanroep (cURL/timeout, non-2xx, ongeldige JSON of een Mímir-foutpayload),
+ * Faalt die aanroep (cURL/timeout, HTTP 5xx, auth, ongeldige JSON of een Mímir-foutpayload),
  * dan valt Hermes terug op de directe BC-route van vóór Mímir: $baseUrl +
  * $auth / $auth_list / $environment en dezelfde filecache.
- * Na de eerste fout in dit PHP-proces wordt Mímir overgeslagen.
+ * Na de eerste infrastructuurfout in dit PHP-proces wordt Mímir overgeslagen.
+ * Een BC-semantische 4xx die Mímir alleen doorgeeft (OData error.code zoals
+ * Internal_RecordNotFound / Internal_DataNotFoundFilter, of BC OData-fout-JSON)
+ * opent het circuit niet: die sectie wordt een lege value plus nightly-cache.
  * Geldt voor webrequests (index.php, dashboard_data.php) en voor nightly.php (CLI of HTTP).
  * Zonder $mimirApi blijft alleen die directe route actief.
  * Zonder BC-credentials wordt de oorspronkelijke Mímir-fout opnieuw gegooid.
@@ -166,8 +169,200 @@ function odata_bc_timeout_seconds(): int
     return 300;
 }
 
+class ODataBcSemanticException extends Exception
+{
+}
+
+function odata_odata_error_code_is_semantic(string $code): bool
+{
+    return preg_match('/^(?:Internal|Application|BadRequest)_[A-Za-z0-9_]+$/', $code) === 1;
+}
+
+function odata_odata_error_message_text($message): string
+{
+    if (is_string($message)) {
+        return $message;
+    }
+    if (is_array($message) && isset($message['value']) && is_string($message['value'])) {
+        return $message['value'];
+    }
+    return '';
+}
+
+/**
+ * @param mixed $error
+ * @return array{code: string, message: string}|null
+ */
+function odata_odata_error_from_object($error): ?array
+{
+    if (!is_array($error)) {
+        return null;
+    }
+    $code = trim((string) ($error['code'] ?? ''));
+    if ($code === '') {
+        return null;
+    }
+    return [
+        'code' => $code,
+        'message' => odata_odata_error_message_text($error['message'] ?? ''),
+    ];
+}
+
+/**
+ * @param mixed $decoded
+ * @return array{code: string, message: string}|null
+ */
+function odata_find_bc_odata_error($decoded): ?array
+{
+    if (!is_array($decoded)) {
+        return null;
+    }
+    if (isset($decoded['odata.error'])) {
+        $found = odata_odata_error_from_object($decoded['odata.error']);
+        if ($found !== null) {
+            return $found;
+        }
+    }
+    if (isset($decoded['error']) && is_array($decoded['error'])) {
+        return odata_odata_error_from_object($decoded['error']);
+    }
+    return null;
+}
+
+/**
+ * @return array{code: string, message: string}|null
+ */
+function odata_find_bc_odata_error_in_text(string $text): ?array
+{
+    if (preg_match('/from\s+OData:\s*(\{.*)$/is', $text, $match) === 1) {
+        $embedded = json_decode($match[1], true);
+        if (is_array($embedded)) {
+            $found = odata_find_bc_odata_error($embedded);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+    }
+    if (preg_match('/"(?:odata\.)?error"\s*:\s*\{\s*"code"\s*:\s*"([^"]+)"/', $text, $match) === 1
+        || preg_match('/\\\\"(?:odata\.)?error\\\\"\s*:\s*\{\s*\\\\"code\\\\"\s*:\s*\\\\"([^"\\\\]+)\\\\"/', $text, $match) === 1) {
+        $code = $match[1];
+        $message = '';
+        if (preg_match('/"message"\s*:\s*"((?:\\\\.|[^"\\\\])*)"/', $text, $msg) === 1
+            || preg_match('/\\\\"message\\\\"\s*:\s*\\\\"((?:\\\\\\\\.|[^"\\\\])*)\\\\"/', $text, $msg) === 1) {
+            $message = stripcslashes($msg[1]);
+        }
+        return ['code' => $code, 'message' => $message];
+    }
+    if (preg_match('/\b((?:Internal|Application|BadRequest)_[A-Za-z0-9_]+)\b\s*:?\s*([^\{"]{0,300})/', $text, $match) === 1) {
+        return ['code' => $match[1], 'message' => trim($match[2])];
+    }
+    return null;
+}
+
+/**
+ * BC-semantische 4xx die Mímir proxy't. null = geen semantische BC-fout
+ * (infrastructuur, auth, of een Mímir-eigen envelope).
+ *
+ * @param mixed $decoded
+ * @return array{status: int, code: string, message: string}|null
+ */
+function odata_mimir_bc_semantic_from_response(int $httpCode, $decoded, string $raw): ?array
+{
+    if ($httpCode === 401 || $httpCode === 403) {
+        return null;
+    }
+
+    $texts = [];
+    if ($raw !== '') {
+        $texts[] = $raw;
+    }
+    if (is_array($decoded)) {
+        $error = $decoded['error'] ?? null;
+        if (is_string($error) && $error !== '') {
+            $texts[] = $error;
+        }
+    }
+
+    $found = odata_find_bc_odata_error($decoded);
+    if ($found === null) {
+        foreach ($texts as $text) {
+            $found = odata_find_bc_odata_error_in_text($text);
+            if ($found !== null) {
+                break;
+            }
+        }
+    }
+    if ($found === null) {
+        return null;
+    }
+
+    $status = null;
+    foreach ($texts as $text) {
+        if (preg_match('/HTTP\s+(\d{3})\s+from\s+OData/i', $text, $match) === 1) {
+            $status = (int) $match[1];
+            break;
+        }
+    }
+    if ($status === 401 || $status === 403 || ($status !== null && $status >= 500)) {
+        return null;
+    }
+
+    $clearJson = odata_find_bc_odata_error($decoded) !== null;
+    if (!$clearJson) {
+        foreach ($texts as $text) {
+            if (preg_match('/"(?:odata\.)?error"\s*:\s*\{/', $text) === 1
+                || preg_match('/\\\\"(?:odata\.)?error\\\\"\s*:\s*\{/', $text) === 1) {
+                $clearJson = true;
+                break;
+            }
+        }
+    }
+    $semanticCode = odata_odata_error_code_is_semantic($found['code']);
+    if (!$semanticCode && !$clearJson) {
+        return null;
+    }
+
+    if ($status === null) {
+        if ($httpCode >= 400 && $httpCode < 500) {
+            $status = $httpCode;
+        } elseif ($semanticCode) {
+            $status = 0;
+        } else {
+            return null;
+        }
+    }
+    if ($status >= 500) {
+        return null;
+    }
+
+    return [
+        'status' => $status,
+        'code' => $found['code'],
+        'message' => $found['message'],
+    ];
+}
+
+function odata_bc_semantic_exception_message(array $semantic): string
+{
+    $code = trim((string) ($semantic['code'] ?? ''));
+    $message = trim(preg_replace('/\s+/', ' ', (string) ($semantic['message'] ?? '')) ?? '');
+    if (strlen($message) > 300) {
+        $message = substr($message, 0, 300) . '…';
+    }
+    $status = (int) ($semantic['status'] ?? 0);
+    $label = $code !== '' ? $code : 'OData';
+    $text = 'BC OData ' . ($status >= 400 ? (string) $status . ' ' : '') . $label;
+    if ($message !== '') {
+        $text .= ': ' . $message;
+    }
+    return $text;
+}
+
 function odata_mimir_is_outage(Throwable $exception): bool
 {
+    if ($exception instanceof ODataBcSemanticException) {
+        return false;
+    }
     $message = $exception->getMessage();
     if (strpos($message, 'Mímir cURL error:') === 0) {
         return true;
@@ -691,7 +886,23 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
 
     $decoded = json_decode($raw, true);
     if ($code < 200 || $code >= 300) {
-        $message = is_array($decoded) ? (string) ($decoded['error'] ?? $raw) : $raw;
+        $semantic = odata_mimir_bc_semantic_from_response($code, $decoded, is_string($raw) ? $raw : '');
+        if ($semantic !== null) {
+            throw new ODataBcSemanticException(odata_bc_semantic_exception_message($semantic));
+        }
+        if (is_array($decoded)) {
+            $errorField = $decoded['error'] ?? null;
+            if (is_string($errorField) && $errorField !== '') {
+                $message = $errorField;
+            } elseif ($errorField !== null) {
+                $encoded = json_encode($errorField, JSON_UNESCAPED_UNICODE);
+                $message = is_string($encoded) ? $encoded : (is_string($raw) ? $raw : '');
+            } else {
+                $message = is_string($raw) ? $raw : '';
+            }
+        } else {
+            $message = is_string($raw) ? $raw : '';
+        }
         odata_mimir_fail(new Exception('Mímir HTTP ' . $code . ': ' . $message));
     }
     if (!is_array($decoded)) {
@@ -1002,7 +1213,27 @@ function odata_direct_query(string $company, string $table, array $odataQuery, i
 function odata_mimir_query(string $company, string $table, array $odataQuery, int $ttlSeconds): array
 {
     $fromMimir = static function () use ($company, $table, $odataQuery, $ttlSeconds): array {
-        return odata_mimir_query_impl($company, $table, $odataQuery, $ttlSeconds);
+        try {
+            return odata_mimir_query_impl($company, $table, $odataQuery, $ttlSeconds);
+        } catch (ODataBcSemanticException $exception) {
+            $env = odata_bc_environment_for_company($company) ?? '';
+            $params = [];
+            foreach (['$select', '$filter', '$orderby', '$expand', '$top', '$skip', 'select', 'filter'] as $key) {
+                if (!array_key_exists($key, $odataQuery)) {
+                    continue;
+                }
+                $value = trim((string) $odataQuery[$key]);
+                if ($value === '') {
+                    continue;
+                }
+                $odataKey = ($key === 'select' || $key === 'filter') ? ('$' . $key) : $key;
+                $params[$odataKey] = $value;
+            }
+            $url = odata_company_url($env, $company, $table, $params);
+            $cacheTtl = $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl();
+            odata_persist_bc_semantic_cache($url, [], $cacheTtl, $exception);
+            return [];
+        }
     };
     if (!odata_mimir_enabled()) {
         return $fromMimir();
@@ -1041,7 +1272,14 @@ function odata_mimir_fetch_all_impl(string $url, int $ttlSeconds): array
 function odata_mimir_fetch_all(string $url, int $ttlSeconds): array
 {
     $fromMimir = static function () use ($url, $ttlSeconds): array {
-        return odata_mimir_fetch_all_impl($url, $ttlSeconds);
+        return odata_mimir_section_result(
+            static function () use ($url, $ttlSeconds): array {
+                return odata_mimir_fetch_all_impl($url, $ttlSeconds);
+            },
+            $url,
+            [],
+            $ttlSeconds
+        );
     };
     if (!odata_mimir_enabled()) {
         return $fromMimir();
@@ -1194,6 +1432,47 @@ function odata_read_nightly_cache(string $url, array $auth, int $ttlSeconds): ?a
     return $cached['data'];
 }
 
+function odata_log_bc_semantic(ODataBcSemanticException $exception, string $url): void
+{
+    static $seen = [];
+    $key = $exception->getMessage() . "\n" . $url;
+    if (isset($seen[$key])) {
+        return;
+    }
+    $seen[$key] = true;
+    error_log('[Hermes] BC-semantische OData-fout, lege cache (circuit blijft dicht): ' . $exception->getMessage() . ' url=' . $url);
+}
+
+function odata_write_empty_section_cache(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): void
+{
+    $ttlSeconds = max(1, $ttlSeconds);
+    $cacheKey = build_cache_key($url, $auth);
+    write_cache_json(cache_path_for_key($cacheKey), [], $ttlSeconds, $url);
+    odata_log_bc_semantic($exception, $url);
+}
+
+function odata_persist_bc_semantic_cache(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): void
+{
+    $cacheTtl = $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl();
+    odata_persist_nightly_cache($url, $auth, [], $cacheTtl);
+    $target = odata_direct_fetch_target($url, $auth);
+    odata_log_bc_semantic($exception, $target['url']);
+}
+
+/**
+ * @param callable(): list<array<string, mixed>> $fetch
+ * @return list<array<string, mixed>>
+ */
+function odata_mimir_section_result(callable $fetch, string $cacheUrl, array $auth, int $ttlSeconds): array
+{
+    try {
+        return $fetch();
+    } catch (ODataBcSemanticException $exception) {
+        odata_persist_bc_semantic_cache($cacheUrl, $auth, $ttlSeconds, $exception);
+        return [];
+    }
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
 {
     if ($ttlSeconds === null) {
@@ -1215,7 +1494,12 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
         $mimirTtl = $ttlSeconds === 0 ? 3600 : $ttlSeconds;
         return odata_mimir_or_direct(
             static function () use ($url, $auth, $mimirTtl, $ttlSeconds): array {
-                $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
+                try {
+                    $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
+                } catch (ODataBcSemanticException $exception) {
+                    odata_persist_bc_semantic_cache($url, $auth, $ttlSeconds, $exception);
+                    return [];
+                }
                 // Zelfde TTL en pad als nightly, zodat de volgende page-load niet
                 // opnieuw naar Mímir hoeft.
                 odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
@@ -1262,7 +1546,15 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
     $next = $url;
 
     while ($next) {
-        $resp = odata_get_json($next, $auth);
+        try {
+            $resp = odata_get_json($next, $auth);
+        } catch (ODataBcSemanticException $exception) {
+            if ($all !== []) {
+                throw $exception;
+            }
+            odata_write_empty_section_cache($url, $auth, $ttlSeconds, $exception);
+            return [];
+        }
 
         if (!isset($resp['value']) || !is_array($resp['value'])) {
             throw new Exception("OData response missing 'value' array");
@@ -1312,6 +1604,10 @@ function odata_get_json(string $url, array $auth): array
     curl_close($ch);
 
     if ($code < 200 || $code >= 300) {
+        $semantic = odata_mimir_bc_semantic_from_response($code, json_decode((string) $raw, true), (string) $raw);
+        if ($semantic !== null) {
+            throw new ODataBcSemanticException(odata_bc_semantic_exception_message($semantic));
+        }
         throw new Exception("HTTP $code from OData: $raw");
     }
 
