@@ -65,6 +65,46 @@ function fallback_count(): int
     return substr_count(fallback_log(), '[Hermes] Mímir failed, falling back to direct OData:');
 }
 
+function hermes_odata_cache_files(): array
+{
+    $files = glob(dirname(__DIR__) . '/web/cache/odata/*.json');
+    return is_array($files) ? $files : [];
+}
+
+function assert_bc_semantic_empty_cache(string $mode, string $label): void
+{
+    global $calls, $auth, $probeUrl, $httpModeFile;
+    file_put_contents($httpModeFile, $mode);
+    odata_mimir_circuit_reset();
+    $directUrl = odata_bc_url_from_odata_url($probeUrl);
+    $expectedPath = cache_path_for_key(build_cache_key($directUrl, $auth));
+    @unlink($expectedPath);
+    $callsBefore = count($calls);
+    $loggedBefore = fallback_count();
+    $cacheBefore = hermes_odata_cache_files();
+    $rows = odata_get_all($probeUrl, $auth, 48 * 3600);
+    if ($rows !== [] || odata_mimir_circuit_open() || count($calls) !== $callsBefore) {
+        fail($label . ' moet lege rijen geven zonder circuit en zonder BC-fallback: rows=' . json_encode($rows) . ' open=' . (odata_mimir_circuit_open() ? '1' : '0') . ' delta=' . (count($calls) - $callsBefore));
+    }
+    if (fallback_count() !== $loggedBefore) {
+        fail($label . ' mag geen Mímir-fallback loggen');
+    }
+    $created = array_values(array_diff(hermes_odata_cache_files(), $cacheBefore));
+    if (count($created) !== 1) {
+        fail($label . ' moet precies één nightly-cache schrijven: ' . json_encode($created));
+    }
+    $payload = json_decode((string) file_get_contents($created[0]), true);
+    $data = is_array($payload) ? ($payload['data'] ?? null) : null;
+    $source = is_array($payload) ? (string) ($payload['_meta']['source_url'] ?? '') : '';
+    if ($data !== [] || strpos($source, 'bc.example') === false || $created[0] !== $expectedPath) {
+        fail($label . ' cache klopt niet: path=' . $created[0] . ' expected=' . $expectedPath . ' payload=' . json_encode($payload));
+    }
+    if (strpos(fallback_log(), '[Hermes] BC-semantische OData-fout, lege cache (circuit blijft dicht):') === false) {
+        fail($label . ' moet de BC-fout loggen zonder Mímir-fallback');
+    }
+    @unlink($created[0]);
+}
+
 if (odata_mimir_connect_timeout_seconds() !== 10) {
     fail('connect-timeout moet 10s zijn');
 }
@@ -356,7 +396,7 @@ $auth_list = $savedAuthList;
 $httpPort = 18948;
 $httpModeFile = sys_get_temp_dir() . '/hermes-mimir-http-mode-' . getmypid();
 $httpMock = sys_get_temp_dir() . '/hermes-mimir-http-mock-' . getmypid() . '.php';
-file_put_contents($httpMock, "<?php\n\$mode = trim((string) @file_get_contents(" . var_export($httpModeFile, true) . "));\nheader('Content-Type: application/json');\nif (\$mode === '400') {\n    http_response_code(400);\n    echo json_encode(['error' => 'bad request']);\n    return;\n}\nif (\$mode === '401') {\n    http_response_code(401);\n    echo json_encode(['error' => 'unauthorized']);\n    return;\n}\nif (\$mode === 'error') {\n    http_response_code(200);\n    echo json_encode(['error' => 'company unknown']);\n    return;\n}\nif (\$mode === '502') {\n    http_response_code(502);\n    echo json_encode(['error' => 'upstream']);\n    return;\n}\nhttp_response_code(500);\necho json_encode(['error' => 'unconfigured mock']);\n");
+file_put_contents($httpMock, "<?php\n\$mode = trim((string) @file_get_contents(" . var_export($httpModeFile, true) . "));\nheader('Content-Type: application/json');\nif (\$mode === '400') {\n    http_response_code(400);\n    echo json_encode(['error' => 'bad request']);\n    return;\n}\nif (\$mode === '401') {\n    http_response_code(401);\n    echo json_encode(['error' => 'unauthorized']);\n    return;\n}\nif (\$mode === 'error') {\n    http_response_code(200);\n    echo json_encode(['error' => 'company unknown']);\n    return;\n}\nif (\$mode === '502') {\n    http_response_code(502);\n    echo json_encode(['error' => 'upstream']);\n    return;\n}\nif (\$mode === '503') {\n    http_response_code(503);\n    echo json_encode(['error' => 'unavailable']);\n    return;\n}\nif (\$mode === 'bc404') {\n    http_response_code(404);\n    echo json_encode(['error' => ['code' => 'Internal_RecordNotFound', 'message' => \"Leverancier bestaat niet Nr.='233'\"]]);\n    return;\n}\nif (\$mode === 'bc502') {\n    http_response_code(502);\n    \$bc = json_encode(['error' => ['code' => 'Internal_RecordNotFound', 'message' => \"Leverancier bestaat niet Nr.='233'\"]]);\n    echo json_encode(['error' => 'HTTP 404 from OData: ' . \$bc]);\n    return;\n}\nif (\$mode === 'bc400') {\n    http_response_code(400);\n    echo json_encode(['error' => ['code' => 'Internal_DataNotFoundFilter', 'message' => 'Geen Projectplanningsregel. Postnr. van projectcontract: 16134']]);\n    return;\n}\nif (\$mode === 'ok') {\n    echo json_encode(['value' => [['No' => 'FROM-MIMIR']]]);\n    return;\n}\nhttp_response_code(500);\necho json_encode(['error' => 'unconfigured mock']);\n");
 $httpServer = proc_open(
     [PHP_BINARY, '-S', '127.0.0.1:' . $httpPort, $httpMock],
     [
@@ -421,6 +461,42 @@ foreach ($mimirFaultModes as $mode => $label) {
 if (strpos(fallback_log(), 'mimir_test_key_should_not_leak') !== false) {
     fail('fallback-log bevat de Mímir-sleutel');
 }
+
+assert_bc_semantic_empty_cache('bc404', 'BC 404 RecordNotFound');
+file_put_contents($httpModeFile, 'ok');
+$callsBeforeOk = count($calls);
+$okRows = odata_get_all($probeUrl, $auth, 30);
+if (($okRows[0]['No'] ?? '') !== 'FROM-MIMIR' || odata_mimir_circuit_open() || count($calls) !== $callsBeforeOk) {
+    fail('na een BC-semantische fout moet Mímir bereikbaar blijven: ' . json_encode($okRows));
+}
+assert_bc_semantic_empty_cache('bc502', 'Mímir 502 met BC 404 RecordNotFound');
+assert_bc_semantic_empty_cache('bc400', 'BC 400 DataNotFoundFilter');
+
+file_put_contents($httpModeFile, '503');
+odata_mimir_circuit_reset();
+$callsBefore503 = count($calls);
+$loggedBefore503 = fallback_count();
+$rows503 = odata_get_all($probeUrl, $auth, 30);
+if (($rows503[0]['No'] ?? '') !== 'WO-1' || !odata_mimir_circuit_open() || count($calls) <= $callsBefore503) {
+    fail('HTTP 503 moet het circuit openen en naar BC terugvallen');
+}
+if (fallback_count() !== $loggedBefore503 + 1) {
+    fail('HTTP 503 moet precies één fallback loggen');
+}
+
+odata_mimir_circuit_reset();
+$mimirBase = 'http://127.0.0.1:9';
+$callsBeforeCurl = count($calls);
+$loggedBeforeCurl = fallback_count();
+$curlRows = odata_get_all($probeUrl, $auth, 30);
+if (($curlRows[0]['No'] ?? '') !== 'WO-1' || !odata_mimir_circuit_open() || count($calls) <= $callsBeforeCurl) {
+    fail('cURL-fout moet het circuit openen en naar BC terugvallen');
+}
+if (fallback_count() !== $loggedBeforeCurl + 1) {
+    fail('cURL-fout moet precies één fallback loggen');
+}
+$mimirBase = 'http://127.0.0.1:' . $httpPort;
+
 odata_mimir_circuit_reset();
 $mimirApi = '';
 $mimirBase = 'http://127.0.0.1:9';
