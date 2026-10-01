@@ -45,7 +45,11 @@ function consolelog($text)
  * Na de eerste infrastructuurfout in dit PHP-proces wordt Mímir overgeslagen.
  * Een BC-semantische 4xx die Mímir alleen doorgeeft (OData error.code zoals
  * Internal_RecordNotFound / Internal_DataNotFoundFilter, of BC OData-fout-JSON)
- * opent het circuit niet: die sectie wordt een lege value plus nightly-cache.
+ * opent het circuit niet. Een al gevulde nightly-cache blijft staan. Is er nog
+ * geen geslaagde fetch, dan komt er een lege cache met fetched=false. Een
+ * page-load behandelt die niet als succes (de fout gaat naar het dashboard).
+ * Nightly zelf gaat door naar de volgende sectie. Refresh en een geslaagde
+ * nightly overschrijven die lege cache.
  * Geldt voor webrequests (index.php, dashboard_data.php) en voor nightly.php (CLI of HTTP).
  * Zonder $mimirApi blijft alleen die directe route actief.
  * Zonder BC-credentials wordt de oorspronkelijke Mímir-fout opnieuw gegooid.
@@ -1231,8 +1235,7 @@ function odata_mimir_query(string $company, string $table, array $odataQuery, in
             }
             $url = odata_company_url($env, $company, $table, $params);
             $cacheTtl = $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl();
-            odata_persist_bc_semantic_cache($url, [], $cacheTtl, $exception);
-            return [];
+            return odata_finish_bc_semantic_for_request($url, [], $cacheTtl, $exception);
         }
     };
     if (!odata_mimir_enabled()) {
@@ -1401,35 +1404,114 @@ function odata_direct_fetch_target(string $url, array $auth): array
     ];
 }
 
+function odata_request_cache_target(string $url, array $auth): array
+{
+    if (odata_mimir_enabled()) {
+        return odata_direct_fetch_target($url, $auth);
+    }
+    return ['url' => $url, 'auth' => $auth];
+}
+
+function odata_request_cache_path(string $url, array $auth): string
+{
+    $target = odata_request_cache_target($url, $auth);
+    return cache_path_for_key(build_cache_key($target['url'], $target['auth']));
+}
+
 function odata_persist_nightly_cache(string $url, array $auth, array $rows, int $ttlSeconds): void
 {
-    $target = odata_direct_fetch_target($url, $auth);
+    $target = odata_request_cache_target($url, $auth);
     $ttlSeconds = max(1, $ttlSeconds);
-    $cacheKey = build_cache_key($target['url'], $target['auth']);
-    write_cache_json(cache_path_for_key($cacheKey), $rows, $ttlSeconds, $target['url']);
+    write_cache_json(
+        cache_path_for_key(build_cache_key($target['url'], $target['auth'])),
+        $rows,
+        $ttlSeconds,
+        $target['url'],
+        ['fetched' => true]
+    );
+}
+
+function odata_note_bc_semantic(string $message): void
+{
+    $GLOBALS['HERMES_LAST_BC_SEMANTIC'] = $message;
+}
+
+function odata_take_bc_semantic_notice(): ?string
+{
+    $message = $GLOBALS['HERMES_LAST_BC_SEMANTIC'] ?? null;
+    unset($GLOBALS['HERMES_LAST_BC_SEMANTIC']);
+    return is_string($message) && $message !== '' ? $message : null;
 }
 
 /**
- * Geldige nightly-filecache, of null bij een miss. Lege data is een hit.
+ * Nachtly (live-fetch, zonder section-refresh) mag door naar de volgende sectie.
+ * Een page-load of refresh=1 geeft de BC-fout door aan het dashboard.
+ */
+function odata_semantic_failure_returns_empty(): bool
+{
+    return odata_live_fetch_enabled() && !odata_nightly_cache_persist_enabled();
+}
+
+/**
+ * @return list<array<string, mixed>>|null
+ */
+function odata_cache_real_rows_at(string $path): ?array
+{
+    if (!is_file($path)) {
+        return null;
+    }
+    $cached = read_cache_payload($path, 1, true);
+    if (empty($cached['valid']) || !is_array($cached['data']) || $cached['data'] === []) {
+        return null;
+    }
+    return $cached['data'];
+}
+
+/**
+ * Cache-hit, of null bij een miss. Een lege cache zonder geslaagde fetch is geen hit.
+ * fetched=false (BC-semantische placeholder) gooit de opgeslagen fout.
+ *
+ * @param array<string, mixed> $cached
+ * @return list<array<string, mixed>>|null
+ */
+function odata_trusted_cache_rows(array $cached): ?array
+{
+    if (empty($cached['valid']) || !is_array($cached['data'])) {
+        return null;
+    }
+
+    $meta = is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
+    $data = $cached['data'];
+    $unfetched = (array_key_exists('fetched', $meta) && $meta['fetched'] === false)
+        || (string) ($meta['empty_reason'] ?? '') === 'bc_semantic';
+    if ($unfetched && $data === []) {
+        $stored = trim((string) ($meta['fetch_error'] ?? ''));
+        throw new ODataBcSemanticException(
+            $stored !== '' ? $stored : 'BC-sectie is niet opgehaald (lege cache zonder geslaagde fetch).'
+        );
+    }
+    if ($data === [] && !array_key_exists('fetched', $meta)) {
+        return null;
+    }
+
+    return $data;
+}
+
+/**
+ * Geldige nightly-filecache, of null bij een miss.
+ * Een lege lijst is alleen een hit als de fetch echt een value-array teruggaf.
  *
  * @return list<array<string, mixed>>|null
  */
 function odata_read_nightly_cache(string $url, array $auth, int $ttlSeconds): ?array
 {
-    $target = odata_mimir_enabled()
-        ? odata_direct_fetch_target($url, $auth)
-        : ['url' => $url, 'auth' => $auth];
-    $cachePath = cache_path_for_key(build_cache_key($target['url'], $target['auth']));
+    $cachePath = odata_request_cache_path($url, $auth);
     if (!is_file($cachePath)) {
         return null;
     }
 
     $cached = read_cache_payload($cachePath, max(1, $ttlSeconds), true);
-    if (empty($cached['valid']) || !is_array($cached['data'])) {
-        return null;
-    }
-
-    return $cached['data'];
+    return odata_trusted_cache_rows($cached);
 }
 
 function odata_log_bc_semantic(ODataBcSemanticException $exception, string $url): void
@@ -1443,20 +1525,48 @@ function odata_log_bc_semantic(ODataBcSemanticException $exception, string $url)
     error_log('[Hermes] BC-semantische OData-fout, lege cache (circuit blijft dicht): ' . $exception->getMessage() . ' url=' . $url);
 }
 
-function odata_write_empty_section_cache(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): void
+/**
+ * BC-semantische fout. Een gevulde cache wordt niet leeggemaakt.
+ * Zonder eerdere rijen schrijven we een lege placeholder (fetched=false).
+ * Nightly krijgt [] zodat de run doorgaat. Page-load en refresh gooien de fout.
+ *
+ * @return list<array<string, mixed>>
+ */
+function odata_finish_bc_semantic(string $path, string $sourceUrl, int $ttlSeconds, ODataBcSemanticException $exception): array
 {
-    $ttlSeconds = max(1, $ttlSeconds);
-    $cacheKey = build_cache_key($url, $auth);
-    write_cache_json(cache_path_for_key($cacheKey), [], $ttlSeconds, $url);
-    odata_log_bc_semantic($exception, $url);
+    $message = $exception->getMessage();
+    odata_note_bc_semantic($message);
+    $existing = odata_cache_real_rows_at($path);
+    if ($existing !== null) {
+        error_log('[Hermes] BC-semantische OData-fout, gevulde cache blijft staan: ' . $message . ' url=' . $sourceUrl);
+        if (odata_semantic_failure_returns_empty()) {
+            return $existing;
+        }
+        throw $exception;
+    }
+
+    $cacheTtl = max(1, $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl());
+    write_cache_json($path, [], $cacheTtl, $sourceUrl, [
+        'fetched' => false,
+        'empty_reason' => 'bc_semantic',
+        'fetch_error' => $message,
+    ]);
+    odata_log_bc_semantic($exception, $sourceUrl);
+    if (odata_semantic_failure_returns_empty()) {
+        return [];
+    }
+    throw $exception;
 }
 
-function odata_persist_bc_semantic_cache(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): void
+function odata_finish_bc_semantic_for_request(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): array
 {
-    $cacheTtl = $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl();
-    odata_persist_nightly_cache($url, $auth, [], $cacheTtl);
-    $target = odata_direct_fetch_target($url, $auth);
-    odata_log_bc_semantic($exception, $target['url']);
+    $target = odata_request_cache_target($url, $auth);
+    return odata_finish_bc_semantic(
+        cache_path_for_key(build_cache_key($target['url'], $target['auth'])),
+        $target['url'],
+        $ttlSeconds,
+        $exception
+    );
 }
 
 /**
@@ -1468,8 +1578,7 @@ function odata_mimir_section_result(callable $fetch, string $cacheUrl, array $au
     try {
         return $fetch();
     } catch (ODataBcSemanticException $exception) {
-        odata_persist_bc_semantic_cache($cacheUrl, $auth, $ttlSeconds, $exception);
-        return [];
+        return odata_finish_bc_semantic_for_request($cacheUrl, $auth, $ttlSeconds, $exception);
     }
 }
 
@@ -1479,10 +1588,12 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
         $ttlSeconds = odata_nightly_cache_ttl();
     }
     $ttlSeconds = max(0, (int) $ttlSeconds);
+    unset($GLOBALS['HERMES_LAST_BC_SEMANTIC']);
     odata_apply_section_refresh_time_limit();
 
     // Nightly en refresh=1 zetten live-fetch aan en slaan de file over.
     // Een gewone page-load leest de cache en gaat alleen bij een miss naar Mímir.
+    // Een lege cache zonder geslaagde fetch is geen hit.
     if (odata_mimir_enabled() && !odata_live_fetch_enabled()) {
         $cached = odata_read_nightly_cache($url, $auth, $ttlSeconds);
         if ($cached !== null) {
@@ -1497,8 +1608,7 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
                 try {
                     $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
                 } catch (ODataBcSemanticException $exception) {
-                    odata_persist_bc_semantic_cache($url, $auth, $ttlSeconds, $exception);
-                    return [];
+                    return odata_finish_bc_semantic_for_request($url, $auth, $ttlSeconds, $exception);
                 }
                 // Zelfde TTL en pad als nightly, zodat de volgende page-load niet
                 // opnieuw naar Mímir hoeft.
@@ -1525,17 +1635,23 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         return $GLOBALS['HERMES_ODATA_BC_FETCH']($url, $auth, $ttlSeconds);
     }
 
-    maybe_cleanup_expired_cache_files();
-
     $cacheKey = build_cache_key($url, $auth);
     $cachePath = cache_path_for_key($cacheKey);
     $live = odata_live_fetch_enabled();
 
+    // Hele live-fetch overslaan, niet alleen dit request. Cleanup wist elk JSON-bestand
+    // ouder dan zeven dagen; een latere sectie heeft dan geen gevulde cache meer om
+    // bij een BC-semantische fout te behouden.
+    if (!$live) {
+        maybe_cleanup_expired_cache_files();
+    }
+
     if (!$live) {
         if (is_file($cachePath)) {
             $cached = read_cache_payload($cachePath, $ttlSeconds, true);
-            if ($cached['valid']) {
-                return $cached['data'];
+            $rows = odata_trusted_cache_rows($cached);
+            if ($rows !== null) {
+                return $rows;
             }
         }
 
@@ -1552,8 +1668,12 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
             if ($all !== []) {
                 throw $exception;
             }
-            odata_write_empty_section_cache($url, $auth, $ttlSeconds, $exception);
-            return [];
+            return odata_finish_bc_semantic(
+                cache_path_for_key(build_cache_key($url, $auth)),
+                $url,
+                $ttlSeconds,
+                $exception
+            );
         }
 
         if (!isset($resp['value']) || !is_array($resp['value'])) {
@@ -1638,6 +1758,16 @@ function build_cache_key(string $url, array $auth): string
     return $url . '|' . $user . '|' . $environment;
 }
 
+function odata_cache_filename_is_system(string $filename): bool
+{
+    if ($filename === '' || $filename[0] === '.') {
+        return true;
+    }
+    return $filename === '.cleanup_marker'
+        || $filename === '.nightly.lock'
+        || $filename === '.nightly-status.json';
+}
+
 function cache_base_dir(): string
 {
     $dir = __DIR__ . "/cache/odata";
@@ -1674,7 +1804,7 @@ function maybe_cleanup_expired_cache_files(): void
 
     $fallbackMaxAge = 7 * 86400;
     foreach ($entries as $entry) {
-        if ($entry === '.' || $entry === '..' || $entry === '.cleanup_marker' || $entry === '.nightly.lock') {
+        if ($entry === '.' || $entry === '..' || odata_cache_filename_is_system($entry)) {
             continue;
         }
 
@@ -1703,12 +1833,13 @@ function read_cache_payload(string $path, int $fallbackTtlSeconds, bool $allowSt
     }
 
     if (isset($payload['_meta']) && isset($payload['data']) && is_array($payload['data'])) {
-        $expiresAt = (int) ($payload['_meta']['expires_at'] ?? 0);
+        $meta = is_array($payload['_meta']) ? $payload['_meta'] : [];
+        $expiresAt = (int) ($meta['expires_at'] ?? 0);
         if ($expiresAt <= 0 || time() <= $expiresAt || $allowStale) {
-            return ['valid' => true, 'delete' => false, 'data' => $payload['data']];
+            return ['valid' => true, 'delete' => false, 'data' => $payload['data'], 'meta' => $meta];
         }
 
-        return ['valid' => false, 'delete' => false, 'data' => $payload['data']];
+        return ['valid' => false, 'delete' => false, 'data' => $payload['data'], 'meta' => $meta];
     }
 
     if ($fallbackTtlSeconds > 0) {
@@ -1737,18 +1868,29 @@ function cache_path_for_key(string $cacheKey): string
     return cache_base_dir() . "/" . $hash . ".json";
 }
 
-function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = ''): void
+function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = '', array $extraMeta = []): void
 {
     // Uniek per write: een vast .tmp laat gelijktijdige refreshes van dezelfde
     // cache-key elkaars bestand afkappen vóór de rename.
     $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
     $now = time();
+    $meta = [
+        'cached_at' => $now,
+        'expires_at' => $now + max(1, $ttlSeconds),
+        'source_url' => $sourceUrl,
+        'fetched' => true,
+    ];
+    if (array_key_exists('fetched', $extraMeta)) {
+        $meta['fetched'] = (bool) $extraMeta['fetched'];
+    }
+    if (isset($extraMeta['empty_reason']) && is_string($extraMeta['empty_reason']) && $extraMeta['empty_reason'] !== '') {
+        $meta['empty_reason'] = $extraMeta['empty_reason'];
+    }
+    if (isset($extraMeta['fetch_error']) && is_string($extraMeta['fetch_error']) && $extraMeta['fetch_error'] !== '') {
+        $meta['fetch_error'] = $extraMeta['fetch_error'];
+    }
     $payload = [
-        '_meta' => [
-            'cached_at' => $now,
-            'expires_at' => $now + max(1, $ttlSeconds),
-            'source_url' => $sourceUrl,
-        ],
+        '_meta' => $meta,
         'data' => $data,
     ];
 
@@ -1872,7 +2014,7 @@ function odata_cache_status_payload(): array
 
             $path = $fileInfo->getPathname();
             $filename = $fileInfo->getFilename();
-            if (pathinfo($filename, PATHINFO_EXTENSION) !== 'json') {
+            if (odata_cache_filename_is_system($filename) || pathinfo($filename, PATHINFO_EXTENSION) !== 'json') {
                 continue;
             }
 
@@ -1934,7 +2076,7 @@ function odata_send_cache_delete_json(): void
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
     $id = trim((string) ($_POST['id'] ?? $_GET['id'] ?? ''));
-    if ($id === '' || !preg_match('/^[a-z0-9._-]+\\.json$/i', $id)) {
+    if ($id === '' || !preg_match('/^[a-z0-9._-]+\\.json$/i', $id) || odata_cache_filename_is_system(basename($id))) {
         http_response_code(400);
         echo json_encode([
             'ok' => false,
@@ -1980,7 +2122,7 @@ function odata_send_cache_clear_json(): void
             }
 
             $filename = $fileInfo->getFilename();
-            if (pathinfo($filename, PATHINFO_EXTENSION) !== 'json') {
+            if (odata_cache_filename_is_system($filename) || pathinfo($filename, PATHINFO_EXTENSION) !== 'json') {
                 continue;
             }
 
