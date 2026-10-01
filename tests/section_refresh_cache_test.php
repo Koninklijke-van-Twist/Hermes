@@ -110,15 +110,57 @@ if (!$httpReady) {
 $mimirBase = 'http://127.0.0.1:' . $httpPort;
 $url = odata_company_url('Production', 'KVT Gas', 'AppItemCard', ['$select' => 'No,Item_Category_Code']);
 $before = cache_files();
+if (odata_mimir_timeout_seconds() === 7200 || odata_live_fetch_enabled()) {
+    fail('een cache-miss op een gewone load mag niet de 7200s-timeout gebruiken');
+}
 $liveRows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
+$createdCache = array_values(array_diff(cache_files(), $before));
 if (($liveRows[0]['No'] ?? '') !== 'ITEM-1') {
     fail('Mímir gaf de artikelrij niet terug');
 }
-if (cache_files() !== $before) {
-    fail('een gewone Mímir-read mag de nightly-cache niet vullen');
+if (count($createdCache) !== 1) {
+    fail('een cache-miss moet de nightly-cache vullen, kreeg ' . count($createdCache));
 }
 
 odata_mimir_circuit_reset();
+$mimirBase = 'http://127.0.0.1:9';
+$started = microtime(true);
+$cachedOnHit = odata_get_all($url, $auth, odata_nightly_cache_ttl());
+$hitElapsed = microtime(true) - $started;
+if (($cachedOnHit[0]['No'] ?? '') !== 'ITEM-1' || $hitElapsed >= 1.0) {
+    fail('een cache-hit mag Mímir niet aanroepen (' . round($hitElapsed, 3) . 's)');
+}
+if (odata_mimir_circuit_open()) {
+    fail('een cache-hit mag het Mímir-circuit niet openen');
+}
+
+odata_mimir_circuit_reset();
+$savedBaseUrl = $baseUrl;
+$savedAuth = $auth;
+$savedAuthList = $auth_list;
+$baseUrl = 'https://mimir.invalid/';
+$auth = ['mode' => 'basic', 'user' => '', 'pass' => ''];
+$auth_list = [];
+odata_enable_live_fetch(true);
+$nightlyBypass = null;
+try {
+    odata_get_all($url, $auth, odata_nightly_cache_ttl());
+} catch (Throwable $exception) {
+    $nightlyBypass = $exception;
+}
+odata_enable_live_fetch(false);
+$baseUrl = $savedBaseUrl;
+$auth = $savedAuth;
+$auth_list = $savedAuthList;
+if (!$nightlyBypass instanceof Throwable || strpos($nightlyBypass->getMessage(), 'Mímir') === false) {
+    fail('nightly/live-fetch moet de filecache overslaan en Mímir proberen');
+}
+if (odata_mimir_timeout_seconds() === 7200) {
+    fail('na live-fetch uit moet de korte timeout terug zijn');
+}
+
+odata_mimir_circuit_reset();
+$mimirBase = 'http://127.0.0.1:' . $httpPort;
 odata_enable_section_refresh();
 $refreshRows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
 $createdCache = array_values(array_diff(cache_files(), $before));
@@ -162,7 +204,7 @@ if (($cachedRows[0]['No'] ?? '') !== 'ITEM-1' || ($cachedRows[0]['Item_Category_
 if (odata_mimir_timeout_seconds() === 7200 || odata_live_fetch_enabled()) {
     fail('de cache-read daarna mag niet in live-fetch blijven hangen');
 }
-$log = (string) file_get_contents($logFile);
+$log = is_file($logFile) ? (string) file_get_contents($logFile) : '';
 if (strpos($log, 'mimir_test_key_should_not_leak') !== false || strpos($log, 'bc-secret') !== false) {
     fail('log bevat een geheim');
 }

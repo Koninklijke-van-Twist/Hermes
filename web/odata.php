@@ -36,10 +36,12 @@ function consolelog($text)
 }
 
 /**
- * Mímir-proxy: als $mimirApi in auth.php staat, gaan OData-fetches eerst naar Mímir.
+ * Mímir-proxy: als $mimirApi in auth.php staat, lezen gewone page-loads eerst de
+ * lokale nightly-filecache. Mímir wordt alleen aangeroepen bij een cache-miss,
+ * bij een expliciete retry (refresh=1) of tijdens nightly (live-fetch).
  * Faalt die aanroep (cURL/timeout, non-2xx, ongeldige JSON of een Mímir-foutpayload),
  * dan valt Hermes terug op de directe BC-route van vóór Mímir: $baseUrl +
- * $auth / $auth_list / $environment en de lokale odata-filecache.
+ * $auth / $auth_list / $environment en dezelfde filecache.
  * Na de eerste fout in dit PHP-proces wordt Mímir overgeslagen.
  * Geldt voor webrequests (index.php, dashboard_data.php) en voor nightly.php (CLI of HTTP).
  * Zonder $mimirApi blijft alleen die directe route actief.
@@ -1169,6 +1171,29 @@ function odata_persist_nightly_cache(string $url, array $auth, array $rows, int 
     write_cache_json(cache_path_for_key($cacheKey), $rows, $ttlSeconds, $target['url']);
 }
 
+/**
+ * Geldige nightly-filecache, of null bij een miss. Lege data is een hit.
+ *
+ * @return list<array<string, mixed>>|null
+ */
+function odata_read_nightly_cache(string $url, array $auth, int $ttlSeconds): ?array
+{
+    $target = odata_mimir_enabled()
+        ? odata_direct_fetch_target($url, $auth)
+        : ['url' => $url, 'auth' => $auth];
+    $cachePath = cache_path_for_key(build_cache_key($target['url'], $target['auth']));
+    if (!is_file($cachePath)) {
+        return null;
+    }
+
+    $cached = read_cache_payload($cachePath, max(1, $ttlSeconds), true);
+    if (empty($cached['valid']) || !is_array($cached['data'])) {
+        return null;
+    }
+
+    return $cached['data'];
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
 {
     if ($ttlSeconds === null) {
@@ -1177,16 +1202,23 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
     $ttlSeconds = max(0, (int) $ttlSeconds);
     odata_apply_section_refresh_time_limit();
 
+    // Nightly en refresh=1 zetten live-fetch aan en slaan de file over.
+    // Een gewone page-load leest de cache en gaat alleen bij een miss naar Mímir.
+    if (odata_mimir_enabled() && !odata_live_fetch_enabled()) {
+        $cached = odata_read_nightly_cache($url, $auth, $ttlSeconds);
+        if ($cached !== null) {
+            return $cached;
+        }
+    }
+
     if (odata_mimir_enabled()) {
         $mimirTtl = $ttlSeconds === 0 ? 3600 : $ttlSeconds;
         return odata_mimir_or_direct(
             static function () use ($url, $auth, $mimirTtl, $ttlSeconds): array {
                 $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
-                if (odata_nightly_cache_persist_enabled()) {
-                    // Zelfde TTL en pad als de nightly-filecache, zodat de volgende
-                    // page-load de sectie uit cache kan tonen.
-                    odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
-                }
+                // Zelfde TTL en pad als nightly, zodat de volgende page-load niet
+                // opnieuw naar Mímir hoeft.
+                odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
                 return $rows;
             },
             static function () use ($url, $auth, $ttlSeconds): array {

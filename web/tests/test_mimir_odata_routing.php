@@ -243,7 +243,17 @@ try {
         json_encode($rows, JSON_UNESCAPED_UNICODE)
     );
     $afterCache = test_cache_files();
-    test_assert('Mímir slaat Hermes-filecache over', count($afterCache) === count($beforeCache));
+    $writtenOnMiss = array_values(array_diff($afterCache, $beforeCache));
+    test_assert('cache-miss schrijft de nightly-filecache', count($writtenOnMiss) === 1, json_encode($writtenOnMiss));
+    $requestsAfterMiss = count(test_mock_requests());
+    $cachedAgain = odata_get_all($nightlyUrl, $auth, odata_nightly_cache_ttl());
+    test_assert(
+        'cache-hit slaat Mímir over',
+        is_array($cachedAgain[0] ?? null)
+            && ($cachedAgain[0]['table'] ?? '') === 'ValueEntries'
+            && count(test_mock_requests()) === $requestsAfterMiss,
+        json_encode($cachedAgain, JSON_UNESCAPED_UNICODE)
+    );
 
     $companyRows = odata_get_all('https://bc.example/Sandbox/ODataV4/Company?$select=Name', [], 30);
     $companyNames = array_map(static function (array $row): string {
@@ -275,6 +285,10 @@ try {
     }
     test_assert('geen request naar de BC-host', $hitBcHost === false);
     test_assert('Mímir-client user-agent', $sawMimirUa);
+
+    foreach (array_diff(test_cache_files(), $beforeCache) as $createdDuringMimir) {
+        @unlink($createdDuringMimir);
+    }
 
     $mimirApi = '';
     $baseUrl = 'http://127.0.0.1:' . $mockPort;
