@@ -73,7 +73,7 @@ function hermes_odata_cache_files(): array
 
 function assert_bc_semantic_empty_cache(string $mode, string $label): void
 {
-    global $calls, $auth, $probeUrl, $httpModeFile;
+    global $calls, $auth, $probeUrl, $httpModeFile, $mimirBase;
     file_put_contents($httpModeFile, $mode);
     odata_mimir_circuit_reset();
     $directUrl = odata_bc_url_from_odata_url($probeUrl);
@@ -82,7 +82,14 @@ function assert_bc_semantic_empty_cache(string $mode, string $label): void
     $callsBefore = count($calls);
     $loggedBefore = fallback_count();
     $cacheBefore = hermes_odata_cache_files();
-    $rows = odata_get_all($probeUrl, $auth, 48 * 3600);
+    $wasLive = odata_live_fetch_enabled();
+    odata_enable_live_fetch(true);
+    odata_enable_nightly_cache_persist(false);
+    try {
+        $rows = odata_get_all($probeUrl, $auth, 48 * 3600);
+    } finally {
+        odata_enable_live_fetch($wasLive);
+    }
     if ($rows !== [] || odata_mimir_circuit_open() || count($calls) !== $callsBefore) {
         fail($label . ' moet lege rijen geven zonder circuit en zonder BC-fallback: rows=' . json_encode($rows) . ' open=' . (odata_mimir_circuit_open() ? '1' : '0') . ' delta=' . (count($calls) - $callsBefore));
     }
@@ -96,8 +103,28 @@ function assert_bc_semantic_empty_cache(string $mode, string $label): void
     $payload = json_decode((string) file_get_contents($created[0]), true);
     $data = is_array($payload) ? ($payload['data'] ?? null) : null;
     $source = is_array($payload) ? (string) ($payload['_meta']['source_url'] ?? '') : '';
-    if ($data !== [] || strpos($source, 'bc.example') === false || $created[0] !== $expectedPath) {
+    $fetched = is_array($payload) ? ($payload['_meta']['fetched'] ?? null) : null;
+    if ($data !== [] || $fetched !== false || strpos($source, 'bc.example') === false || $created[0] !== $expectedPath) {
         fail($label . ' cache klopt niet: path=' . $created[0] . ' expected=' . $expectedPath . ' payload=' . json_encode($payload));
+    }
+    odata_enable_live_fetch(false);
+    $savedMimirBase = $mimirBase;
+    $mimirBase = 'http://127.0.0.1:9';
+    $pageLoadError = null;
+    $callsBeforePage = count($calls);
+    $pageStarted = microtime(true);
+    try {
+        odata_get_all($probeUrl, $auth, 48 * 3600);
+    } catch (ODataBcSemanticException $exception) {
+        $pageLoadError = $exception;
+    }
+    $pageElapsed = microtime(true) - $pageStarted;
+    $mimirBase = $savedMimirBase;
+    if (!$pageLoadError instanceof ODataBcSemanticException || count($calls) !== $callsBeforePage || $pageElapsed >= 1.0) {
+        fail($label . ' page-load mag een lege semantische cache niet als succes lezen (' . round($pageElapsed, 3) . 's)');
+    }
+    if (strpos($pageLoadError->getMessage(), 'Internal_') === false) {
+        fail($label . ' page-load mist de BC-fout: ' . $pageLoadError->getMessage());
     }
     if (strpos(fallback_log(), '[Hermes] BC-semantische OData-fout, lege cache (circuit blijft dicht):') === false) {
         fail($label . ' moet de BC-fout loggen zonder Mímir-fallback');
@@ -471,6 +498,81 @@ if (($okRows[0]['No'] ?? '') !== 'FROM-MIMIR' || odata_mimir_circuit_open() || c
 }
 assert_bc_semantic_empty_cache('bc502', 'Mímir 502 met BC 404 RecordNotFound');
 assert_bc_semantic_empty_cache('bc400', 'BC 400 DataNotFoundFilter');
+
+file_put_contents($httpModeFile, 'bc404');
+odata_mimir_circuit_reset();
+odata_enable_live_fetch(true);
+odata_enable_nightly_cache_persist(false);
+$directUrl = odata_bc_url_from_odata_url($probeUrl);
+$keepPath = cache_path_for_key(build_cache_key($directUrl, $auth));
+write_cache_json($keepPath, [['No' => 'KEEP-ME']], 3600, $directUrl);
+$keptRows = odata_get_all($probeUrl, $auth, 48 * 3600);
+$keptPayload = json_decode((string) file_get_contents($keepPath), true);
+odata_enable_live_fetch(false);
+if (($keptRows[0]['No'] ?? '') !== 'KEEP-ME' || (string) ($keptPayload['data'][0]['No'] ?? '') !== 'KEEP-ME') {
+    fail('een BC-semantische fout mag een gevulde cache niet leegmaken: ' . json_encode($keptPayload));
+}
+if (odata_mimir_circuit_open()) {
+    fail('behouden van een gevulde cache mag het circuit niet openen');
+}
+odata_enable_live_fetch(true);
+odata_enable_nightly_cache_persist(true);
+$refreshKept = null;
+try {
+    odata_get_all($probeUrl, $auth, 48 * 3600);
+} catch (ODataBcSemanticException $exception) {
+    $refreshKept = $exception;
+}
+odata_enable_live_fetch(false);
+odata_enable_nightly_cache_persist(false);
+$refreshPayload = json_decode((string) file_get_contents($keepPath), true);
+if (!$refreshKept instanceof ODataBcSemanticException || (string) ($refreshPayload['data'][0]['No'] ?? '') !== 'KEEP-ME') {
+    fail('refresh moet de BC-fout tonen en de gevulde cache laten staan');
+}
+$keepNotice = odata_take_bc_semantic_notice();
+if (!is_string($keepNotice) || strpos($keepNotice, 'Internal_RecordNotFound') === false) {
+    fail('behouden cache moet de BC-fout als notice teruggeven: ' . var_export($keepNotice, true));
+}
+@unlink($keepPath);
+
+$legacyPath = cache_path_for_key(build_cache_key($directUrl, $auth));
+file_put_contents($legacyPath, json_encode([
+    '_meta' => [
+        'cached_at' => time(),
+        'expires_at' => time() + 3600,
+        'source_url' => $directUrl,
+    ],
+    'data' => [],
+], JSON_UNESCAPED_UNICODE));
+file_put_contents($httpModeFile, 'ok');
+odata_mimir_circuit_reset();
+odata_enable_live_fetch(false);
+$refilled = odata_get_all($probeUrl, $auth, 48 * 3600);
+$refilledPayload = json_decode((string) file_get_contents($legacyPath), true);
+if (($refilled[0]['No'] ?? '') !== 'FROM-MIMIR' || ($refilledPayload['_meta']['fetched'] ?? null) !== true) {
+    fail('een oude lege cache zonder fetched-vlag mag geen succes zijn: ' . json_encode($refilledPayload));
+}
+@unlink($legacyPath);
+
+$filledLegacyPath = cache_path_for_key(build_cache_key($directUrl, $auth));
+file_put_contents($filledLegacyPath, json_encode([
+    '_meta' => [
+        'cached_at' => time(),
+        'expires_at' => time() + 3600,
+        'source_url' => $directUrl,
+    ],
+    'data' => [['No' => 'LEGACY-ROW']],
+], JSON_UNESCAPED_UNICODE));
+$mimirBase = 'http://127.0.0.1:9';
+odata_mimir_circuit_reset();
+$legacyStarted = microtime(true);
+$legacyRows = odata_get_all($probeUrl, $auth, 48 * 3600);
+$legacyElapsed = microtime(true) - $legacyStarted;
+$mimirBase = 'http://127.0.0.1:' . $httpPort;
+if (($legacyRows[0]['No'] ?? '') !== 'LEGACY-ROW' || $legacyElapsed >= 1.0 || odata_mimir_circuit_open()) {
+    fail('een gevulde cache zonder fetched-vlag blijft een hit');
+}
+@unlink($filledLegacyPath);
 
 file_put_contents($httpModeFile, '503');
 odata_mimir_circuit_reset();
