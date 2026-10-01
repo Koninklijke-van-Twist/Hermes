@@ -115,8 +115,21 @@ function odata_mimir_circuit_reset(): void
     $state['error'] = null;
 }
 
+function odata_live_fetch_request_timeout_seconds(): int
+{
+    return 7200;
+}
+
+function odata_live_fetch_connect_timeout_seconds(): int
+{
+    return 60;
+}
+
 function odata_mimir_connect_timeout_seconds(): int
 {
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_connect_timeout_seconds();
+    }
     return 10;
 }
 
@@ -127,7 +140,28 @@ function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
 
 function odata_mimir_timeout_seconds(): int
 {
+    // Nightly zet live-fetch aan (HTTP én CLI) en mag per call 2 uur wachten.
+    // Gewone page-loads laten die vlag uit en houden de korte web-timeout.
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_request_timeout_seconds();
+    }
     return odata_mimir_timeout_seconds_for_sapi(PHP_SAPI);
+}
+
+function odata_bc_connect_timeout_seconds(): int
+{
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_connect_timeout_seconds();
+    }
+    return 30;
+}
+
+function odata_bc_timeout_seconds(): int
+{
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_request_timeout_seconds();
+    }
+    return 300;
 }
 
 function odata_mimir_is_outage(Throwable $exception): bool
@@ -1155,8 +1189,8 @@ function odata_get_json(string $url, array $auth): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TIMEOUT => 300,
+        CURLOPT_CONNECTTIMEOUT => odata_bc_connect_timeout_seconds(),
+        CURLOPT_TIMEOUT => odata_bc_timeout_seconds(),
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
         ],
