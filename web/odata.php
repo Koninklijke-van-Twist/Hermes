@@ -50,6 +50,19 @@ function consolelog($text)
  * page-load behandelt die niet als succes (de fout gaat naar het dashboard).
  * Nightly zelf gaat door naar de volgende sectie. Refresh en een geslaagde
  * nightly overschrijven die lege cache.
+ *
+ * Internal_RecordNotFound op SalesOrderSalesLines / AppPurchaseOrderPurchLines
+ * komt niet uit een Hermes-sleutel. De BC-pagina zoekt tijdens het lezen zelf
+ * een gerelateerde leverancier of projectplanningsregel op en breekt de hele
+ * datumreeks af als die ontbreekt. Bij live-fetch (nightly of refresh=1) splitst
+ * Hermes die reeks en slaat alleen het onleesbare dagvenster over. Timeouts,
+ * HTTP 5xx en andere 4xx blijven een echte fout. Klant- en artikelnummers worden
+ * niet per `No eq` opgezocht: een ontbrekend nummer is lokaal leeg.
+ *
+ * Lokaal testen: HERMES_DEV_TOP, $hermesDevTop in auth.php, ?dev_top= of
+ * --dev-top= beperkt elke bron (en daarmee elke card op die bron) tot N rijen.
+ * De $top zit in de cache-URL, dus een gelimiteerde fetch overschrijft de
+ * volledige nightly-cache niet. Zonder vlag blijft top 0 (ongelimiteerd).
  * Geldt voor webrequests (index.php, dashboard_data.php) en voor nightly.php (CLI of HTTP).
  * Zonder $mimirApi blijft alleen die directe route actief.
  * Zonder BC-credentials wordt de oorspronkelijke Mímir-fout opnieuw gegooid.
@@ -1134,7 +1147,7 @@ function odata_mimir_query_impl(string $company, string $table, array $odataQuer
         'company' => $company,
         'table' => $table,
         'max_age' => max(0, $ttlSeconds),
-        'top' => 0,
+        'top' => odata_bounded_top($odataQuery['$top'] ?? ($odataQuery['top'] ?? 0)),
     ];
 
     $select = trim((string) ($odataQuery['$select'] ?? $odataQuery['select'] ?? ''));
@@ -1582,12 +1595,325 @@ function odata_mimir_section_result(callable $fetch, string $cacheUrl, array $au
     }
 }
 
+function odata_bounded_top($raw): int
+{
+    if (!is_numeric($raw)) {
+        return 0;
+    }
+    $top = (int) $raw;
+    if ($top < 1) {
+        return 0;
+    }
+    if ($top > 10000) {
+        return 10000;
+    }
+    return $top;
+}
+
+/**
+ * Plafond per OData-bron voor een lokale test. 0 = ongelimiteerd.
+ * Eerste gezet-en-geldige bron wint: query, CLI, env, auth.php.
+ */
+function odata_dev_row_limit(): int
+{
+    $candidates = [];
+    if (isset($_GET['dev_top'])) {
+        $candidates[] = $_GET['dev_top'];
+    } elseif (PHP_SAPI === 'cli') {
+        $argv = $_SERVER['argv'] ?? [];
+        if (is_array($argv)) {
+            foreach ($argv as $arg) {
+                if (preg_match('/^--dev-top=(\d+)$/', (string) $arg, $match) === 1) {
+                    $candidates[] = $match[1];
+                    break;
+                }
+            }
+        }
+    }
+    $env = getenv('HERMES_DEV_TOP');
+    if ($env !== false && $env !== '') {
+        $candidates[] = $env;
+    }
+    if (array_key_exists('hermesDevTop', $GLOBALS)) {
+        $candidates[] = $GLOBALS['hermesDevTop'];
+    }
+    foreach ($candidates as $raw) {
+        if ($raw === null || $raw === false || $raw === '') {
+            continue;
+        }
+        if (is_int($raw) || (is_string($raw) && preg_match('/^\d+$/', trim($raw)) === 1)) {
+            return odata_bounded_top((int) $raw);
+        }
+    }
+    return 0;
+}
+
+function odata_recovery_depth(): int
+{
+    return (int) ($GLOBALS['HERMES_ODATA_RECOVERY_DEPTH'] ?? 0);
+}
+
+function odata_recovery_reset_if_top(): void
+{
+    if (odata_recovery_depth() !== 0) {
+        return;
+    }
+    $GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED'] = [];
+    $GLOBALS['HERMES_ODATA_RECOVERY_HITS'] = 0;
+    $GLOBALS['HERMES_ODATA_RECOVERY_CALLS'] = 0;
+    unset($GLOBALS['HERMES_LAST_BC_PARTIAL']);
+}
+
+function odata_rebuild_url(array $parts, array $query): string
+{
+    $url = '';
+    if (isset($parts['scheme']) && is_string($parts['scheme']) && $parts['scheme'] !== '') {
+        $url .= $parts['scheme'] . '://';
+    }
+    if (isset($parts['user']) && is_string($parts['user']) && $parts['user'] !== '') {
+        $url .= $parts['user'];
+        if (isset($parts['pass']) && is_string($parts['pass'])) {
+            $url .= ':' . $parts['pass'];
+        }
+        $url .= '@';
+    }
+    if (isset($parts['host']) && is_string($parts['host'])) {
+        $url .= $parts['host'];
+    }
+    if (isset($parts['port'])) {
+        $url .= ':' . (string) $parts['port'];
+    }
+    if (isset($parts['path']) && is_string($parts['path'])) {
+        $url .= $parts['path'];
+    }
+    if ($query !== []) {
+        $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    }
+    return $url;
+}
+
+function odata_url_with_query(string $url, array $query): string
+{
+    $parts = parse_url($url);
+    if (!is_array($parts)) {
+        return $url;
+    }
+    return odata_rebuild_url($parts, $query);
+}
+
+function odata_url_query(string $url): array
+{
+    $parts = parse_url($url);
+    $query = [];
+    if (!is_array($parts) || !isset($parts['query']) || !is_string($parts['query']) || $parts['query'] === '') {
+        return $query;
+    }
+    parse_str($parts['query'], $query);
+    return is_array($query) ? $query : [];
+}
+
+function odata_url_with_dev_top(string $url): string
+{
+    $limit = odata_dev_row_limit();
+    if ($limit < 1) {
+        return $url;
+    }
+    $query = odata_url_query($url);
+    if (isset($query['$top']) || isset($query['top'])) {
+        return $url;
+    }
+    $query['$top'] = (string) $limit;
+    return odata_url_with_query($url, $query);
+}
+
+function odata_url_with_filter(string $url, string $filter): string
+{
+    $query = odata_url_query($url);
+    $query['$filter'] = $filter;
+    return odata_url_with_query($url, $query);
+}
+
+function odata_semantic_is_missing_record(ODataBcSemanticException $exception): bool
+{
+    $message = $exception->getMessage();
+    return strpos($message, 'Internal_RecordNotFound') !== false
+        || strpos($message, 'Internal_DataNotFoundFilter') !== false;
+}
+
+/**
+ * @return array{field: string, start: DateTimeImmutable, end: DateTimeImmutable}|null
+ */
+function odata_date_window_from_filter(string $filter): ?array
+{
+    $filter = trim($filter);
+    if (preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s+ge\s+(\d{4}-\d{2}-\d{2})$/', $filter, $match) === 1) {
+        $start = DateTimeImmutable::createFromFormat('!Y-m-d', $match[2]);
+        if (!$start instanceof DateTimeImmutable) {
+            return null;
+        }
+        $end = (new DateTimeImmutable('today'))->modify('+2 years')->modify('+1 day');
+        if (!$end instanceof DateTimeImmutable || $end <= $start) {
+            return null;
+        }
+        return ['field' => $match[1], 'start' => $start, 'end' => $end];
+    }
+    if (preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s+ge\s+(\d{4}-\d{2}-\d{2})\s+and\s+\1\s+lt\s+(\d{4}-\d{2}-\d{2})$/', $filter, $match) === 1) {
+        $start = DateTimeImmutable::createFromFormat('!Y-m-d', $match[2]);
+        $end = DateTimeImmutable::createFromFormat('!Y-m-d', $match[3]);
+        if (!$start instanceof DateTimeImmutable || !$end instanceof DateTimeImmutable || $end <= $start) {
+            return null;
+        }
+        return ['field' => $match[1], 'start' => $start, 'end' => $end];
+    }
+    return null;
+}
+
+function odata_window_filter(string $field, DateTimeImmutable $start, DateTimeImmutable $end): string
+{
+    return $field . ' ge ' . $start->format('Y-m-d') . ' and ' . $field . ' lt ' . $end->format('Y-m-d');
+}
+
+function odata_recovery_skip(string $label): void
+{
+    if (!isset($GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED']) || !is_array($GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED'])) {
+        $GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED'] = [];
+    }
+    $GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED'][] = $label;
+}
+
+function odata_recovery_note_rows(array $rows): void
+{
+    if (odata_recovery_depth() < 1 || $rows === []) {
+        return;
+    }
+    $GLOBALS['HERMES_ODATA_RECOVERY_HITS'] = (int) ($GLOBALS['HERMES_ODATA_RECOVERY_HITS'] ?? 0) + 1;
+}
+
+function odata_take_partial_notice(): ?string
+{
+    $message = $GLOBALS['HERMES_LAST_BC_PARTIAL'] ?? null;
+    unset($GLOBALS['HERMES_LAST_BC_PARTIAL']);
+    return is_string($message) && $message !== '' ? $message : null;
+}
+
+function odata_finish_partial_notice(ODataBcSemanticException $exception): void
+{
+    $skipped = $GLOBALS['HERMES_ODATA_RECOVERY_SKIPPED'] ?? [];
+    if (!is_array($skipped) || $skipped === []) {
+        return;
+    }
+    $lines = [];
+    foreach ($skipped as $item) {
+        if (is_string($item) && $item !== '') {
+            $lines[] = $item;
+        }
+    }
+    if ($lines === []) {
+        return;
+    }
+    $shown = array_slice($lines, 0, 6);
+    $text = 'BC-pagina keek een ontbrekend record op; venster overgeslagen: ' . implode(', ', $shown);
+    $rest = count($lines) - count($shown);
+    if ($rest > 0) {
+        $text .= ' (+' . (string) $rest . ')';
+    }
+    $text .= '. ' . $exception->getMessage();
+    $GLOBALS['HERMES_LAST_BC_PARTIAL'] = $text;
+    error_log('[Hermes] ' . $text);
+}
+
+/**
+ * Live-fetch die stukloopt omdat de BC-pagina één gerelateerd record mist.
+ * null = niet splitsen (aanroeper houdt de sectiefout). [] = dit venster overslaan.
+ *
+ * @return list<array<string, mixed>>|null
+ */
+function odata_attempt_date_recovery(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): ?array
+{
+    if (!odata_live_fetch_enabled() || odata_dev_row_limit() > 0) {
+        return null;
+    }
+    if (!odata_semantic_is_missing_record($exception)) {
+        return null;
+    }
+    $parsed = odata_mimir_parse_entity_url($url);
+    if ($parsed === null) {
+        return null;
+    }
+    $filter = (string) ($parsed['query']['$filter'] ?? '');
+    $window = odata_date_window_from_filter($filter);
+    if ($window === null) {
+        return null;
+    }
+    $days = (int) $window['start']->diff($window['end'])->format('%a');
+    if ($days < 1) {
+        return null;
+    }
+    $label = $window['field'] . ' ' . $window['start']->format('Y-m-d') . '..' . $window['end']->format('Y-m-d');
+    if ($days < 2) {
+        odata_recovery_skip($label);
+        return [];
+    }
+    $calls = (int) ($GLOBALS['HERMES_ODATA_RECOVERY_CALLS'] ?? 0);
+    if ($calls >= 48) {
+        odata_recovery_skip($label . ' (splitbudget)');
+        return [];
+    }
+    $GLOBALS['HERMES_ODATA_RECOVERY_CALLS'] = $calls + 1;
+
+    $mid = $window['start']->modify('+' . (string) intdiv($days, 2) . ' days');
+    if (!$mid instanceof DateTimeImmutable || $mid <= $window['start'] || $mid >= $window['end']) {
+        return null;
+    }
+    $depth = odata_recovery_depth();
+    $GLOBALS['HERMES_ODATA_RECOVERY_DEPTH'] = $depth + 1;
+    try {
+        $left = odata_get_all(
+            odata_url_with_filter($url, odata_window_filter($window['field'], $window['start'], $mid)),
+            $auth,
+            $ttlSeconds
+        );
+        $right = odata_get_all(
+            odata_url_with_filter($url, odata_window_filter($window['field'], $mid, $window['end'])),
+            $auth,
+            $ttlSeconds
+        );
+    } finally {
+        $GLOBALS['HERMES_ODATA_RECOVERY_DEPTH'] = $depth;
+    }
+    return array_merge($left, $right);
+}
+
+/**
+ * @return list<array<string, mixed>>
+ */
+function odata_handle_missing_record(string $url, array $auth, int $ttlSeconds, ODataBcSemanticException $exception): array
+{
+    $recovered = odata_attempt_date_recovery($url, $auth, $ttlSeconds, $exception);
+    if ($recovered !== null && odata_recovery_depth() === 0 && (int) ($GLOBALS['HERMES_ODATA_RECOVERY_HITS'] ?? 0) === 0) {
+        $recovered = null;
+    }
+    if ($recovered !== null) {
+        if (odata_recovery_depth() === 0) {
+            odata_persist_nightly_cache($url, $auth, $recovered, $ttlSeconds);
+            odata_finish_partial_notice($exception);
+        }
+        return $recovered;
+    }
+    if (odata_recovery_depth() > 0 && !odata_semantic_is_missing_record($exception)) {
+        throw $exception;
+    }
+    return odata_finish_bc_semantic_for_request($url, $auth, $ttlSeconds, $exception);
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
 {
+    $url = odata_url_with_dev_top($url);
     if ($ttlSeconds === null) {
         $ttlSeconds = odata_nightly_cache_ttl();
     }
     $ttlSeconds = max(0, (int) $ttlSeconds);
+    odata_recovery_reset_if_top();
     unset($GLOBALS['HERMES_LAST_BC_SEMANTIC']);
     odata_apply_section_refresh_time_limit();
 
@@ -1608,11 +1934,15 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
                 try {
                     $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
                 } catch (ODataBcSemanticException $exception) {
-                    return odata_finish_bc_semantic_for_request($url, $auth, $ttlSeconds, $exception);
+                    return odata_handle_missing_record($url, $auth, $ttlSeconds, $exception);
                 }
+                odata_recovery_note_rows($rows);
                 // Zelfde TTL en pad als nightly, zodat de volgende page-load niet
-                // opnieuw naar Mímir hoeft.
-                odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
+                // opnieuw naar Mímir hoeft. Deelvensters tijdens een split blijven
+                // buiten de nightly-cache; de oorspronkelijke URL krijgt het totaal.
+                if (odata_recovery_depth() === 0) {
+                    odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
+                }
                 return $rows;
             },
             static function () use ($url, $auth, $ttlSeconds): array {
@@ -1658,6 +1988,7 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         throw new Exception("geen nightly-cache");
     }
 
+    odata_recovery_reset_if_top();
     $all = [];
     $next = $url;
 
@@ -1668,12 +1999,7 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
             if ($all !== []) {
                 throw $exception;
             }
-            return odata_finish_bc_semantic(
-                cache_path_for_key(build_cache_key($url, $auth)),
-                $url,
-                $ttlSeconds,
-                $exception
-            );
+            return odata_handle_missing_record($url, $auth, $ttlSeconds, $exception);
         }
 
         if (!isset($resp['value']) || !is_array($resp['value'])) {
@@ -1684,7 +2010,10 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         $next = $resp['@odata.nextLink'] ?? null;
     }
 
-    write_cache_json($cachePath, $all, $ttlSeconds, $url);
+    odata_recovery_note_rows($all);
+    if (odata_recovery_depth() === 0) {
+        write_cache_json($cachePath, $all, $ttlSeconds, $url);
+    }
     return $all;
 }
 

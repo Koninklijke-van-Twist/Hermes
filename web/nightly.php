@@ -214,6 +214,7 @@ while (!empty($queue)) {
         $rows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
         $rowCount = count($rows);
         $notice = odata_take_bc_semantic_notice();
+        $partial = odata_take_partial_notice();
         $succeeded[$sectionId] = $rowCount;
         unset($failed[$sectionId]);
         $nightlyStatus['sections_done'] = count($succeeded);
@@ -229,6 +230,8 @@ while (!empty($queue)) {
             } else {
                 nightly_log('BEHOUDEN ' . $sectionId . ' — ' . $rowCount . ' bestaande rijen blijven staan. ' . $notice);
             }
+        } elseif ($partial !== null) {
+            nightly_log('DEEL ' . $sectionId . ' — ' . $rowCount . ' rijen. ' . $partial);
         } else {
             nightly_log('OK ' . $sectionId . ' — ' . $rowCount . ' rijen.');
         }
