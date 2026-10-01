@@ -1635,11 +1635,16 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         return $GLOBALS['HERMES_ODATA_BC_FETCH']($url, $auth, $ttlSeconds);
     }
 
-    maybe_cleanup_expired_cache_files();
-
     $cacheKey = build_cache_key($url, $auth);
     $cachePath = cache_path_for_key($cacheKey);
     $live = odata_live_fetch_enabled();
+
+    // Hele live-fetch overslaan, niet alleen dit request. Cleanup wist elk JSON-bestand
+    // ouder dan zeven dagen; een latere sectie heeft dan geen gevulde cache meer om
+    // bij een BC-semantische fout te behouden.
+    if (!$live) {
+        maybe_cleanup_expired_cache_files();
+    }
 
     if (!$live) {
         if (is_file($cachePath)) {

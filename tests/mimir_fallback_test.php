@@ -655,4 +655,45 @@ if (strpos(fallback_log(), 'loaded-secret') !== false || strpos(fallback_log(), 
     fail('log bevat het wachtwoord uit auth.php');
 }
 
+$savedBcFetch = $GLOBALS['HERMES_ODATA_BC_FETCH'] ?? null;
+unset($GLOBALS['HERMES_ODATA_BC_FETCH']);
+$wasLiveForCleanup = odata_live_fetch_enabled();
+$cleanupMarker = cache_cleanup_marker_path();
+$otherSectionCache = cache_base_dir() . '/live-cleanup-other-section.json';
+file_put_contents($otherSectionCache, json_encode([
+    '_meta' => ['cached_at' => time() - (8 * 86400), 'expires_at' => time() + 3600, 'source_url' => 'https://bc.example/other', 'fetched' => true],
+    'data' => [['No' => 'KEEP-OTHER']],
+], JSON_UNESCAPED_UNICODE));
+touch($otherSectionCache, time() - (8 * 86400));
+file_put_contents($cleanupMarker, (string) (time() - 120));
+odata_enable_live_fetch(true);
+$liveCleanupError = null;
+try {
+    odata_get_all_direct('http://127.0.0.1:9/ODataV4/Company(\'Other\')/AppItemCard', $auth, 30);
+} catch (Throwable $exception) {
+    $liveCleanupError = $exception;
+}
+if (!is_file($otherSectionCache)) {
+    fail('live-fetch mag caches van andere secties niet wissen');
+}
+odata_enable_live_fetch(false);
+file_put_contents($cleanupMarker, (string) (time() - 120));
+$idleCleanupError = null;
+try {
+    odata_get_all_direct('http://127.0.0.1:9/ODataV4/Company(\'Missing\')/AppItemCard', $auth, 30);
+} catch (Throwable $exception) {
+    $idleCleanupError = $exception;
+}
+if (is_file($otherSectionCache)) {
+    fail('buiten live-fetch moet een cache ouder dan zeven dagen wel weg');
+}
+if (!$idleCleanupError instanceof Throwable || strpos($idleCleanupError->getMessage(), 'geen nightly-cache') === false) {
+    fail('na cleanup zonder cache moet de directe leesfout terugkomen');
+}
+odata_enable_live_fetch($wasLiveForCleanup);
+if ($savedBcFetch !== null) {
+    $GLOBALS['HERMES_ODATA_BC_FETCH'] = $savedBcFetch;
+}
+unset($liveCleanupError);
+
 echo "OK\n";
