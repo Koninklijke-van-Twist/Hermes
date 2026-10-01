@@ -68,6 +68,12 @@ function fallback_count(): int
 if (odata_mimir_connect_timeout_seconds() !== 10) {
     fail('connect-timeout moet 10s zijn');
 }
+if (odata_bc_connect_timeout_seconds() !== 30) {
+    fail('BC connect-timeout buiten nightly moet 30s blijven');
+}
+if (odata_bc_timeout_seconds() !== 300) {
+    fail('BC-timeout buiten nightly moet 300s blijven');
+}
 if (odata_mimir_timeout_seconds_for_sapi('cli') !== 600) {
     fail('CLI-timeout moet 600s blijven');
 }
@@ -76,6 +82,24 @@ if (odata_mimir_timeout_seconds_for_sapi('fpm-fcgi') !== 90 || odata_mimir_timeo
 }
 if (PHP_SAPI === 'cli' && odata_mimir_timeout_seconds() !== 600) {
     fail('huidige CLI-sapi moet de lange timeout gebruiken');
+}
+
+odata_enable_live_fetch(true);
+if (odata_mimir_timeout_seconds() !== 7200 || odata_bc_timeout_seconds() !== 7200) {
+    fail('live-fetch/nightly request-timeout moet 7200s zijn voor Mímir en BC');
+}
+if (odata_mimir_connect_timeout_seconds() !== 60 || odata_bc_connect_timeout_seconds() !== 60) {
+    fail('live-fetch/nightly connect-timeout moet 60s zijn');
+}
+if (odata_mimir_timeout_seconds_for_sapi('fpm-fcgi') !== 90 || odata_mimir_timeout_seconds_for_sapi('cli') !== 600) {
+    fail('sapi-defaults mogen niet meeschuiven met live-fetch');
+}
+odata_enable_live_fetch(false);
+if (odata_mimir_connect_timeout_seconds() !== 10 || odata_mimir_timeout_seconds() !== odata_mimir_timeout_seconds_for_sapi(PHP_SAPI)) {
+    fail('na live-fetch uit moeten de korte timeouts terug zijn');
+}
+if (odata_bc_timeout_seconds() !== 300 || odata_bc_connect_timeout_seconds() !== 30) {
+    fail('na live-fetch uit moeten de korte BC-timeouts terug zijn');
 }
 
 $syntheticCompanyUrl = odata_company_url('Production', 'KVT Gas', 'AppWerkorders', ['$select' => 'No']);

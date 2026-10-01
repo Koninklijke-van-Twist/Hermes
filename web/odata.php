@@ -36,10 +36,12 @@ function consolelog($text)
 }
 
 /**
- * Mímir-proxy: als $mimirApi in auth.php staat, gaan OData-fetches eerst naar Mímir.
+ * Mímir-proxy: als $mimirApi in auth.php staat, lezen gewone page-loads eerst de
+ * lokale nightly-filecache. Mímir wordt alleen aangeroepen bij een cache-miss,
+ * bij een expliciete retry (refresh=1) of tijdens nightly (live-fetch).
  * Faalt die aanroep (cURL/timeout, non-2xx, ongeldige JSON of een Mímir-foutpayload),
  * dan valt Hermes terug op de directe BC-route van vóór Mímir: $baseUrl +
- * $auth / $auth_list / $environment en de lokale odata-filecache.
+ * $auth / $auth_list / $environment en dezelfde filecache.
  * Na de eerste fout in dit PHP-proces wordt Mímir overgeslagen.
  * Geldt voor webrequests (index.php, dashboard_data.php) en voor nightly.php (CLI of HTTP).
  * Zonder $mimirApi blijft alleen die directe route actief.
@@ -115,8 +117,21 @@ function odata_mimir_circuit_reset(): void
     $state['error'] = null;
 }
 
+function odata_live_fetch_request_timeout_seconds(): int
+{
+    return 7200;
+}
+
+function odata_live_fetch_connect_timeout_seconds(): int
+{
+    return 60;
+}
+
 function odata_mimir_connect_timeout_seconds(): int
 {
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_connect_timeout_seconds();
+    }
     return 10;
 }
 
@@ -127,7 +142,28 @@ function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
 
 function odata_mimir_timeout_seconds(): int
 {
+    // Nightly zet live-fetch aan (HTTP én CLI) en mag per call 2 uur wachten.
+    // Gewone page-loads laten die vlag uit en houden de korte web-timeout.
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_request_timeout_seconds();
+    }
     return odata_mimir_timeout_seconds_for_sapi(PHP_SAPI);
+}
+
+function odata_bc_connect_timeout_seconds(): int
+{
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_connect_timeout_seconds();
+    }
+    return 30;
+}
+
+function odata_bc_timeout_seconds(): int
+{
+    if (odata_live_fetch_enabled()) {
+        return odata_live_fetch_request_timeout_seconds();
+    }
+    return 300;
 }
 
 function odata_mimir_is_outage(Throwable $exception): bool
@@ -1075,28 +1111,119 @@ function odata_company_url(string $environment, string $company, string $entity,
     return $base . $entity . $query;
 }
 
+function odata_nightly_cache_persist_enabled(): bool
+{
+    return !empty($GLOBALS['ODATA_PERSIST_NIGHTLY_CACHE']);
+}
+
+function odata_enable_nightly_cache_persist(bool $enabled = true): void
+{
+    $GLOBALS['ODATA_PERSIST_NIGHTLY_CACHE'] = $enabled;
+}
+
+/**
+ * Expliciete dashboard-retry: lange live-fetch-timeouts én het resultaat
+ * in de nightly-filecache. Gewone page-loads zetten dit niet aan.
+ */
+function odata_enable_section_refresh(): void
+{
+    odata_enable_live_fetch(true);
+    odata_enable_nightly_cache_persist(true);
+    odata_apply_section_refresh_time_limit();
+}
+
+function odata_apply_section_refresh_time_limit(): void
+{
+    if (!odata_nightly_cache_persist_enabled()) {
+        return;
+    }
+
+    $seconds = odata_live_fetch_request_timeout_seconds();
+    set_time_limit($seconds);
+    ini_set('max_execution_time', (string) $seconds);
+}
+
+/**
+ * Zelfde URL en auth als de directe fallback, dus hetzelfde cachepad als nightly.
+ *
+ * @return array{url: string, auth: array}
+ */
+function odata_direct_fetch_target(string $url, array $auth): array
+{
+    $choice = odata_bc_environment_choice_from_url($url);
+    if (!empty($choice['specific'])) {
+        $directAuth = odata_bc_auth_for_specific_env($choice['env'], $auth) ?? $auth;
+    } else {
+        $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
+    }
+
+    return [
+        'url' => odata_bc_url_from_odata_url($url),
+        'auth' => $directAuth,
+    ];
+}
+
+function odata_persist_nightly_cache(string $url, array $auth, array $rows, int $ttlSeconds): void
+{
+    $target = odata_direct_fetch_target($url, $auth);
+    $ttlSeconds = max(1, $ttlSeconds);
+    $cacheKey = build_cache_key($target['url'], $target['auth']);
+    write_cache_json(cache_path_for_key($cacheKey), $rows, $ttlSeconds, $target['url']);
+}
+
+/**
+ * Geldige nightly-filecache, of null bij een miss. Lege data is een hit.
+ *
+ * @return list<array<string, mixed>>|null
+ */
+function odata_read_nightly_cache(string $url, array $auth, int $ttlSeconds): ?array
+{
+    $target = odata_mimir_enabled()
+        ? odata_direct_fetch_target($url, $auth)
+        : ['url' => $url, 'auth' => $auth];
+    $cachePath = cache_path_for_key(build_cache_key($target['url'], $target['auth']));
+    if (!is_file($cachePath)) {
+        return null;
+    }
+
+    $cached = read_cache_payload($cachePath, max(1, $ttlSeconds), true);
+    if (empty($cached['valid']) || !is_array($cached['data'])) {
+        return null;
+    }
+
+    return $cached['data'];
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = null): array
 {
     if ($ttlSeconds === null) {
         $ttlSeconds = odata_nightly_cache_ttl();
     }
     $ttlSeconds = max(0, (int) $ttlSeconds);
+    odata_apply_section_refresh_time_limit();
+
+    // Nightly en refresh=1 zetten live-fetch aan en slaan de file over.
+    // Een gewone page-load leest de cache en gaat alleen bij een miss naar Mímir.
+    if (odata_mimir_enabled() && !odata_live_fetch_enabled()) {
+        $cached = odata_read_nightly_cache($url, $auth, $ttlSeconds);
+        if ($cached !== null) {
+            return $cached;
+        }
+    }
 
     if (odata_mimir_enabled()) {
         $mimirTtl = $ttlSeconds === 0 ? 3600 : $ttlSeconds;
         return odata_mimir_or_direct(
-            static function () use ($url, $mimirTtl): array {
-                // Mímir beheert de BC-cache (max_age); Hermes-filecache wordt overgeslagen.
-                return odata_mimir_fetch_all_impl($url, $mimirTtl);
+            static function () use ($url, $auth, $mimirTtl, $ttlSeconds): array {
+                $rows = odata_mimir_fetch_all_impl($url, $mimirTtl);
+                // Zelfde TTL en pad als nightly, zodat de volgende page-load niet
+                // opnieuw naar Mímir hoeft.
+                odata_persist_nightly_cache($url, $auth, $rows, $ttlSeconds);
+                return $rows;
             },
             static function () use ($url, $auth, $ttlSeconds): array {
-                $choice = odata_bc_environment_choice_from_url($url);
-                if (!empty($choice['specific'])) {
-                    $directAuth = odata_bc_auth_for_specific_env($choice['env'], $auth) ?? $auth;
-                } else {
-                    $directAuth = odata_bc_auth_for_fallback($auth) ?? $auth;
-                }
-                return odata_get_all_direct(odata_bc_url_from_odata_url($url), $directAuth, $ttlSeconds);
+                $target = odata_direct_fetch_target($url, $auth);
+                return odata_get_all_direct($target['url'], $target['auth'], $ttlSeconds);
             }
         );
     }
@@ -1155,8 +1282,8 @@ function odata_get_json(string $url, array $auth): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TIMEOUT => 300,
+        CURLOPT_CONNECTTIMEOUT => odata_bc_connect_timeout_seconds(),
+        CURLOPT_TIMEOUT => odata_bc_timeout_seconds(),
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
         ],
@@ -1316,7 +1443,9 @@ function cache_path_for_key(string $cacheKey): string
 
 function write_cache_json(string $path, array $data, int $ttlSeconds, string $sourceUrl = ''): void
 {
-    $tmp = $path . ".tmp";
+    // Uniek per write: een vast .tmp laat gelijktijdige refreshes van dezelfde
+    // cache-key elkaars bestand afkappen vóór de rename.
+    $tmp = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
     $now = time();
     $payload = [
         '_meta' => [
@@ -1333,8 +1462,14 @@ function write_cache_json(string $path, array $data, int $ttlSeconds, string $so
         throw new Exception("Failed to encode cache JSON");
     }
 
-    file_put_contents($tmp, $json, LOCK_EX);
-    rename($tmp, $path);
+    if (file_put_contents($tmp, $json, LOCK_EX) === false) {
+        @unlink($tmp);
+        throw new Exception("Failed to write cache JSON");
+    }
+    if (!rename($tmp, $path)) {
+        @unlink($tmp);
+        throw new Exception("Failed to publish cache JSON");
+    }
 }
 
 function odata_cache_read_payload_meta(string $path): ?array
