@@ -121,11 +121,140 @@ assert_true(
 );
 
 $clamped = sales_week_selection_from_request(2026, 99, $friday);
-assert_true('week 99 wordt de laatste week', $clamped === ['year' => 2026, 'week' => 53], json_encode($clamped));
+assert_true(
+    'lege toekomstige week valt terug op nu',
+    $clamped === $default,
+    json_encode($clamped)
+);
+$withFutureSale = [sales_week_key(2026, 42) => true];
+$keptFuture = sales_week_selection_from_request(2026, 42, $friday, $withFutureSale);
+assert_true('toekomstige week met verkopen blijft kiesbaar', $keptFuture === ['year' => 2026, 'week' => 42], json_encode($keptFuture));
 $rejectedYear = sales_week_selection_from_request(1999, 10, $friday);
 assert_true('jaar buiten het venster valt terug op nu', $rejectedYear === $default, json_encode($rejectedYear));
 $missing = sales_week_selection_from_request(0, 0, $friday);
 assert_true('lege aanvraag is de standaardweek', $missing === $default);
+
+assert_true('week 40 is niet toekomstig', sales_week_is_future(2026, 40, $friday) === false);
+assert_true('week 39 is niet toekomstig', sales_week_is_future(2026, 39, $friday) === false);
+assert_true('week 41 is toekomstig', sales_week_is_future(2026, 41, $friday));
+
+$listedNow = sales_week_listed_weeks(2026, [], $friday);
+assert_true(
+    'huidig jaar stopt bij de huidige week zonder toekomstige verkopen',
+    $listedNow === range(1, 40),
+    json_encode($listedNow)
+);
+$listedWithSale = sales_week_listed_weeks(2026, $withFutureSale, $friday);
+assert_true(
+    'toekomstige week met verkopen komt erbij, lege toekomstige weken niet',
+    in_array(40, $listedWithSale, true)
+        && in_array(42, $listedWithSale, true)
+        && !in_array(41, $listedWithSale, true)
+        && !in_array(53, $listedWithSale, true)
+);
+$listedPastYear = sales_week_listed_weeks(2025, [], $friday);
+assert_true(
+    'verleden jaar houdt alle weken',
+    $listedPastYear === range(1, sales_week_count(2025))
+);
+assert_true('verleden week blijft kiesbaar', sales_week_selection_from_request(2025, 10, $friday) === ['year' => 2025, 'week' => 10]);
+
+$yearsWithoutFuture = sales_week_year_options($friday, []);
+assert_true(
+    'geen toekomstig jaar zonder verkopen',
+    $yearsWithoutFuture === [2026, 2025, 2024],
+    json_encode($yearsWithoutFuture)
+);
+$yearsWithFuture = sales_week_year_options($friday, [sales_week_key(2028, 2) => true]);
+assert_true(
+    'toekomstig jaar met verkopen komt erbij, een leeg tussenjaar niet',
+    $yearsWithFuture === [2028, 2026, 2025, 2024],
+    json_encode($yearsWithFuture)
+);
+$futureOnlyWeeks = sales_week_listed_weeks(2028, [sales_week_key(2028, 2) => true], $friday);
+assert_true('in een toekomstig jaar alleen weken met verkopen', $futureOnlyWeeks === [2], json_encode($futureOnlyWeeks));
+
+$futureRows = [
+    [
+        'Shipment_Date' => '2026-10-12',
+        'No' => 'ART-42',
+        'Description' => 'Later',
+        'Type' => 'Artikel',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 10,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Shipment_Date' => '2026-10-05',
+        'No' => 'ART-41',
+        'Description' => 'Nog open',
+        'Type' => 'Artikel',
+        'Quantity' => 4,
+        'Outstanding_Quantity' => 4,
+        'Line_Amount' => 40,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Shipment_Date' => '2026-10-19',
+        'No' => 'RES-2',
+        'Description' => 'Uren',
+        'Type' => 'Resource',
+        'Quantity' => 2,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 20,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Shipment_Date' => '2026-10-02',
+        'No' => 'ART-40',
+        'Description' => 'Vandaag',
+        'Type' => 'Artikel',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 8,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Shipment_Date' => '2026-10-12',
+        'No' => 'ART-ELSE',
+        'Description' => 'Andere afdeling',
+        'Type' => 'Artikel',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 9,
+        'Shortcut_Dimension_1_Code' => '40',
+    ],
+    [
+        'Shipment_Date' => '2026-10-26',
+        'No' => 'CHG-1',
+        'Description' => 'Vracht',
+        'Type' => 'Charge (Item)',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 12,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+];
+$futureKeys = sales_week_future_weeks_with_sales(
+    $futureRows,
+    $friday,
+    function (array $row): bool {
+        return (string) ($row['Shortcut_Dimension_1_Code'] ?? '') === '15';
+    }
+);
+assert_true(
+    'alleen een toekomstige week met geleverde artikelregels',
+    $futureKeys === [sales_week_key(2026, 42) => true],
+    json_encode(array_keys($futureKeys))
+);
+
+$indexSource = (string) file_get_contents(dirname(__DIR__) . '/web/index.php');
+assert_true('tabel scrollt in 500px', strpos($indexSource, 'max-height: 500px;') !== false);
+assert_true(
+    'weektabel zit in het scrollvak',
+    strpos($dashboardSource, 'week-sales-scroll') !== false
+);
 
 assert_true(
     'scope gekozen afdeling',

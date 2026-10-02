@@ -125,16 +125,30 @@ function sales_week_bounds(int $year, int $week): array
 }
 
 /**
+ * @param array<string, true> $futureWeeksWithSales sleutels uit sales_week_key()
  * @return list<int>
  */
-function sales_week_year_options(?DateTimeImmutable $now = null): array
+function sales_week_year_options(?DateTimeImmutable $now = null, array $futureWeeksWithSales = []): array
 {
     $now = sales_week_now($now);
     $calendarYear = (int) $now->format('Y');
     $isoYear = (int) $now->format('o');
     $min = min($calendarYear - 2, $isoYear);
     $max = max($calendarYear, $isoYear);
+    $extraYears = [];
+    foreach (array_keys($futureWeeksWithSales) as $key) {
+        $year = (int) explode('-', (string) $key, 2)[0];
+        if ($year > $max) {
+            $extraYears[$year] = true;
+        }
+    }
+
     $years = [];
+    $futureYears = array_keys($extraYears);
+    rsort($futureYears, SORT_NUMERIC);
+    foreach ($futureYears as $year) {
+        $years[] = $year;
+    }
     for ($year = $max; $year >= $min; $year--) {
         $years[] = $year;
     }
@@ -181,31 +195,97 @@ function sales_week_default_selection(?DateTimeImmutable $now = null): array
 /**
  * @return array{year: int, week: int}
  */
-function sales_week_selection_from_request(int $year, int $week, ?DateTimeImmutable $now = null): array
+function sales_week_selection_from_request(int $year, int $week, ?DateTimeImmutable $now = null, array $futureWeeksWithSales = []): array
 {
     if ($year < 1 || $week < 1) {
         return sales_week_default_selection($now);
     }
 
-    $options = sales_week_year_options($now);
-    $min = min($options);
-    $max = max($options);
-    if ($year < $min || $year > $max) {
+    $options = sales_week_year_options($now, $futureWeeksWithSales);
+    if (!in_array($year, $options, true)) {
         return sales_week_default_selection($now);
     }
 
-    $maxWeek = sales_week_count($year);
-    if ($week > $maxWeek) {
-        $week = $maxWeek;
-    }
-    if ($week < 1) {
-        $week = 1;
+    $listed = sales_week_listed_weeks($year, $futureWeeksWithSales, $now);
+    if (!in_array($week, $listed, true)) {
+        return sales_week_default_selection($now);
     }
 
     return [
         'year' => $year,
         'week' => $week,
     ];
+}
+
+function sales_week_key(int $year, int $week): string
+{
+    return $year . '-' . $week;
+}
+
+function sales_week_is_future(int $year, int $week, ?DateTimeImmutable $now = null): bool
+{
+    $today = sales_week_now($now)->setTime(0, 0);
+    $bounds = sales_week_bounds($year, $week);
+
+    return $bounds['start'] > $today;
+}
+
+/**
+ * Verleden weken en de huidige week blijven in de lijst, ook zonder verkopen.
+ * Een toekomstige week alleen als die al verkopen heeft.
+ *
+ * @param array<string, true> $futureWeeksWithSales
+ * @return list<int>
+ */
+function sales_week_listed_weeks(int $year, array $futureWeeksWithSales = [], ?DateTimeImmutable $now = null): array
+{
+    $listed = [];
+    $count = sales_week_count($year);
+    for ($week = 1; $week <= $count; $week++) {
+        if (!sales_week_is_future($year, $week, $now) || isset($futureWeeksWithSales[sales_week_key($year, $week)])) {
+            $listed[] = $week;
+        }
+    }
+
+    return $listed;
+}
+
+/**
+ * @param list<array<string, mixed>> $rows
+ * @param callable(array<string, mixed>): bool|null $includeRow
+ * @return array<string, true>
+ */
+function sales_week_future_weeks_with_sales(array $rows, ?DateTimeImmutable $now = null, ?callable $includeRow = null): array
+{
+    $found = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        if ($includeRow !== null && !$includeRow($row)) {
+            continue;
+        }
+
+        $date = sales_bc_date($row['Shipment_Date'] ?? null);
+        if (!$date instanceof DateTimeImmutable) {
+            continue;
+        }
+
+        $year = (int) $date->format('o');
+        $week = (int) $date->format('W');
+        if (!sales_week_is_future($year, $week, $now)) {
+            continue;
+        }
+
+        $bounds = sales_week_bounds($year, $week);
+        if (sales_week_line_from_row($row, $bounds['start'], $bounds['end']) === null) {
+            continue;
+        }
+
+        $found[sales_week_key($year, $week)] = true;
+    }
+
+    return $found;
 }
 
 function sales_week_is_current(int $year, int $week, ?DateTimeImmutable $now = null): bool
@@ -427,4 +507,35 @@ function sales_week_load_lines(string $environment, string $company, int $year, 
     $url = sales_week_request_url($environment, $company, $year, $week, $departmentScope);
 
     return odata_get_all($url, $auth, $ttl);
+}
+
+function sales_week_future_cache_key(string $company, string $departmentScope, string $fromDate): string
+{
+    return $company . '|dept=' . $departmentScope . '|future-from=' . $fromDate;
+}
+
+function sales_week_future_request_url(string $environment, string $company, string $departmentScope, ?DateTimeImmutable $now = null): string
+{
+    $today = sales_week_now($now)->setTime(0, 0);
+    $start = $today->modify('+1 day');
+    $end = $today->setDate((int) $today->format('Y') + 2, 12, 31);
+    $params = [
+        '$select' => sales_week_odata_select(),
+        '$filter' => sales_week_odata_filter($start, $end),
+        'hermes_scope' => sales_week_future_cache_key($company, $departmentScope, $start->format('Y-m-d')),
+    ];
+
+    return odata_company_url($environment, $company, 'SalesLines', $params);
+}
+
+/**
+ * Toekomstige leveringen kunnen nog wijzigen, dus dezelfde korte TTL als de huidige week.
+ *
+ * @return list<array<string, mixed>>
+ */
+function sales_week_load_future_lines(string $environment, string $company, string $departmentScope, array $auth, ?DateTimeImmutable $now = null): array
+{
+    $url = sales_week_future_request_url($environment, $company, $departmentScope, $now);
+
+    return odata_get_all($url, $auth, sales_week_current_cache_ttl_seconds());
 }
