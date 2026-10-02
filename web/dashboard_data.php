@@ -635,6 +635,10 @@ function fetch_item_categories_for_items(
         return [];
     }
 
+    // Geen sleutel-filter per artikelnummer. BC antwoordt op een ontbrekend nummer
+    // met Internal_RecordNotFound voor de hele aanvraag, niet met een lege set.
+    // De nightly-cache heeft de AppItemCard al; een nummer dat daar niet in zit
+    // blijft leeg en de verkoopregel houdt zijn eigen omschrijving.
     $wanted = array_fill_keys($itemNos, true);
     $rows = odata_fetch_source_safe('AppItemCard', $environment, $company, $auth, $errors);
     $categoryByItemNo = [];
@@ -686,6 +690,9 @@ function fetch_customer_names_for_nos(
         return [];
     }
 
+    // Geen sleutel-filter per klantnummer. Een verwijderde klant geeft bij BC
+    // Internal_RecordNotFound op de hele aanvraag, niet een lege rij. De naam op
+    // de verkoopregel (Sell_to_Customer_Name) vult aan wat niet op de kaart staat.
     $wanted = array_fill_keys($customerNos, true);
     $rows = odata_fetch_source_safe('AppCustomerCard', $environment, $company, $auth, $errors);
     $nameByCustomerNo = [];

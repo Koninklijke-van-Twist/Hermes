@@ -849,6 +849,11 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 {
                     params.set(k, String(v));
                 }
+                const devTop = new URLSearchParams(window.location.search).get('dev_top');
+                if (devTop !== null && devTop !== '' && !params.has('dev_top'))
+                {
+                    params.set('dev_top', devTop);
+                }
                 return params;
             }
 

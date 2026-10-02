@@ -31,3 +31,9 @@ $baseUrl = "https://my-bc-domain.com:7148/";
 $allowedUsers = [
     "user@domain.nl"
 ];
+
+// Lokaal testen. Max rijen per OData-bron; elke card die die bron laadt stopt
+// daar. Productie: deze regel weglaten. Zelfde effect als HERMES_DEV_TOP,
+// ?dev_top=50 op het dashboard of php web/nightly.php --dev-top=50.
+// De limiet zit in de cache-URL en overschrijft de volledige nightly-cache niet.
+// $hermesDevTop = 50;
