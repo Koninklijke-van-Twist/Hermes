@@ -205,10 +205,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             overflow-y: auto;
         }
 
+        #sec-week-sales .week-sales-scroll table {
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
         #sec-week-sales .week-sales-scroll thead th {
             position: sticky;
             top: 0;
-            z-index: 1;
+            z-index: 2;
             background: #fafcff;
         }
 
