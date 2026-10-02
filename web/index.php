@@ -167,6 +167,44 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             color: #304055;
         }
 
+        .week-sales-head {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .week-sales-heading {
+            font-size: 15px;
+            padding-bottom: 6px;
+        }
+
+        .week-sales-filters {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-weight: 400;
+        }
+
+        .week-sales-filters .field {
+            min-width: 160px;
+        }
+
+        .week-sales-filters select {
+            width: 220px;
+            max-width: 100%;
+        }
+
+        .week-sales-range {
+            margin: 8px 12px 0 12px;
+        }
+
+        #sec-week-sales table tfoot td {
+            font-weight: 700;
+            background: #fafcff;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -525,7 +563,8 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
         <div class="header">
             <h1>Omzet Dashboard</h1>
-            <p class="sub">Omzet, order intake, levertijd, top 10 klanten/producten en inbound (week/maand/jaar).
+            <p class="sub">Omzet, order intake, levertijd, verkopen per week, top 10 klanten/producten en inbound
+                (week/maand/jaar).
             </p>
         </div>
 
@@ -586,6 +625,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 title="Omzet per productgroep: Hier zie je de omzet uitgesplitst per productgroep. Dit helpt om te zien welke groepen het meeste bijdragen aan de totale omzet.">
                 <div class="table-title">
                     Omzet per productgroep</div>
+                <div class="loading-box large">
+                    <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                </div>
+            </div>
+
+            <div class="table-wrap" id="sec-week-sales"
+                title="Verkopen per week: geleverde verkoopregels (leverdatum) in de gekozen ISO-week, binnen het gekozen bedrijf en de afdelingscode. Aantal en bedrag zijn het geleverde deel, net als bij Top 10.">
+                <div class="table-title">
+                    Verkopen per week</div>
                 <div class="loading-box large">
                     <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                 </div>
@@ -697,12 +745,17 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 card_order_intake: { ...defaultKpiPeriodState },
                 card_lead_time: { ...defaultKpiPeriodState }
             };
+            const weekSalesState = {
+                year: '',
+                week: ''
+            };
 
             const sectionConfigs = [
                 { id: 'sec-card-omzet', section: 'card_omzet_parts', large: false },
                 { id: 'sec-card-order-intake', section: 'card_order_intake', large: false },
                 { id: 'sec-card-lead-time', section: 'card_lead_time', large: false },
                 { id: 'sec-table-omzet-productgroep', section: 'table_omzet_productgroep', large: true },
+                { id: 'sec-week-sales', section: 'table_week_sales', large: true },
                 { id: 'sec-top-customers-week', section: 'table_top_customers', period: 'week', large: true },
                 { id: 'sec-top-customers-maand', section: 'table_top_customers', period: 'maand', large: true },
                 { id: 'sec-top-customers-jaar', section: 'table_top_customers', period: 'jaar', large: true },
@@ -926,6 +979,17 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 {
                     params.set('period', config.period);
                 }
+                if (config.section === 'table_week_sales')
+                {
+                    if (weekSalesState.year)
+                    {
+                        params.set('week_sales_year', weekSalesState.year);
+                    }
+                    if (weekSalesState.week)
+                    {
+                        params.set('week_sales_week', weekSalesState.week);
+                    }
+                }
                 if (refresh)
                 {
                     params.set('refresh', '1');
@@ -951,6 +1015,19 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
                     target.innerHTML = payload.html;
                     target.dataset.loaded = '1';
+                    if (config.section === 'table_week_sales')
+                    {
+                        const yearEl = target.querySelector('[data-week-sales="year"]');
+                        const weekEl = target.querySelector('[data-week-sales="week"]');
+                        if (yearEl instanceof HTMLSelectElement && yearEl.value)
+                        {
+                            weekSalesState.year = yearEl.value;
+                        }
+                        if (weekEl instanceof HTMLSelectElement && weekEl.value)
+                        {
+                            weekSalesState.week = weekEl.value;
+                        }
+                    }
                     highlightLoadedCard(target);
                 } catch (error)
                 {
@@ -1039,7 +1116,32 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             contentEl.addEventListener('change', function (event)
             {
                 const target = event.target;
-                if (!(target instanceof HTMLSelectElement) || !target.classList.contains('period-select'))
+                if (!(target instanceof HTMLSelectElement))
+                {
+                    return;
+                }
+
+                if (target.classList.contains('week-sales-select'))
+                {
+                    const container = target.closest('#sec-week-sales');
+                    if (!(container instanceof HTMLElement))
+                    {
+                        return;
+                    }
+
+                    const yearEl = container.querySelector('[data-week-sales="year"]');
+                    const weekEl = container.querySelector('[data-week-sales="week"]');
+                    weekSalesState.year = yearEl instanceof HTMLSelectElement ? (yearEl.value || '') : '';
+                    weekSalesState.week = weekEl instanceof HTMLSelectElement ? (weekEl.value || '') : '';
+                    const config = sectionConfigById['sec-week-sales'] || null;
+                    if (config)
+                    {
+                        loadSection(config);
+                    }
+                    return;
+                }
+
+                if (!target.classList.contains('period-select'))
                 {
                     return;
                 }

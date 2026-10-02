@@ -9,6 +9,7 @@ require __DIR__ . "/auth.php";
 require __DIR__ . "/logincheck.php";
 require_once __DIR__ . "/odata.php";
 require_once __DIR__ . "/odata_sections.php";
+require_once __DIR__ . "/sales_lines.php";
 
 $sectionRefresh = $_GET['refresh'] ?? '';
 if (is_string($sectionRefresh) && $sectionRefresh === '1') {
@@ -85,13 +86,7 @@ function first_non_empty(array $row, array $keys): string
 
 function parse_bc_date($value): ?DateTimeImmutable
 {
-    if (!is_string($value) || $value === '') {
-        return null;
-    }
-
-    $datePart = substr($value, 0, 10);
-    $dt = DateTimeImmutable::createFromFormat('Y-m-d', $datePart);
-    return $dt ?: null;
+    return sales_local_calendar_date($value);
 }
 
 function in_period(DateTimeImmutable $date, DateTimeImmutable $start, DateTimeImmutable $today): bool
@@ -1008,8 +1003,7 @@ if ($section === 'table_omzet_productgroep') {
             continue;
         }
 
-        $lineType = normalize((string) ($row['Type'] ?? ''));
-        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+        if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
 
@@ -1043,8 +1037,7 @@ if ($section === 'table_omzet_productgroep') {
             continue;
         }
 
-        $lineType = normalize((string) ($row['Type'] ?? ''));
-        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+        if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
 
@@ -1289,6 +1282,120 @@ if ($section === 'table_omzet_productgroep') {
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
 
+if ($section === 'table_week_sales') {
+    $errors = [];
+    $requestedYear = (int) ($_GET['week_sales_year'] ?? 0);
+    $requestedWeek = (int) ($_GET['week_sales_week'] ?? 0);
+    $selection = sales_week_selection_from_request($requestedYear, $requestedWeek);
+    $year = (int) $selection['year'];
+    $week = (int) $selection['week'];
+    $bounds = sales_week_bounds($year, $week);
+    $scope = sales_week_department_scope($departmentFilter, $allowedDepartmentCodes);
+    $salesLines = [];
+    try {
+        $salesLines = sales_week_load_lines(
+            (string) $environment,
+            $selectedCompany,
+            $year,
+            $week,
+            $scope,
+            $auth
+        );
+    } catch (Throwable $e) {
+        $errors[] = 'SalesLines: ' . $e->getMessage();
+    }
+
+    $lines = sales_week_collect_lines(
+        $salesLines,
+        $bounds['start'],
+        $bounds['end'],
+        function (array $row) use ($departmentFilter, $allowedDepartmentCodes): bool {
+            return matches_department_scope(
+                $row,
+                ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'],
+                $departmentFilter,
+                $allowedDepartmentCodes
+            );
+        }
+    );
+
+    $yearOptions = sales_week_year_options();
+    $weekCount = sales_week_count($year);
+    $totalQty = 0.0;
+    $totalAmount = 0.0;
+    foreach ($lines as $line) {
+        $totalQty += (float) $line['quantity'];
+        $totalAmount += (float) $line['amount'];
+    }
+
+    ob_start();
+    ?>
+    <div class="table-title week-sales-head">
+        <div class="week-sales-heading">Verkopen per week</div>
+        <div class="week-sales-filters">
+            <div class="field">
+                <label for="week_sales_year">Jaar</label>
+                <select id="week_sales_year" class="week-sales-select" data-week-sales="year">
+                    <?php foreach ($yearOptions as $optionYear): ?>
+                        <option value="<?= html((string) $optionYear) ?>" <?= $optionYear === $year ? 'selected' : '' ?>><?= html((string) $optionYear) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="field">
+                <label for="week_sales_week">Weeknummer</label>
+                <select id="week_sales_week" class="week-sales-select" data-week-sales="week">
+                    <?php for ($optionWeek = 1; $optionWeek <= $weekCount; $optionWeek++): ?>
+                        <option value="<?= html((string) $optionWeek) ?>" <?= $optionWeek === $week ? 'selected' : '' ?>><?= html(sales_week_option_label($year, $optionWeek)) ?></option>
+                    <?php endfor; ?>
+                </select>
+            </div>
+        </div>
+    </div>
+    <p class="small week-sales-range">Leverdatum <?= html($bounds['start']->format('d-m-Y')) ?> t/m
+        <?= html($bounds['end']->format('d-m-Y')) ?></p>
+    <table>
+        <thead>
+            <tr>
+                <th>Documentnr</th>
+                <th>Datum</th>
+                <th>Klant</th>
+                <th>Artikel</th>
+                <th class="right">Aantal</th>
+                <th class="right">Bedrag</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php if ($lines === []): ?>
+                <tr>
+                    <td colspan="6">Geen verkopen in deze week.</td>
+                </tr>
+            <?php else: ?>
+                <?php foreach ($lines as $line): ?>
+                    <tr>
+                        <td><?= html((string) $line['document_no']) ?></td>
+                        <td><?= html($line['date']->format('d-m-Y')) ?></td>
+                        <td><?= html((string) $line['customer']) ?></td>
+                        <td><?= html((string) $line['item']) ?></td>
+                        <td class="right"><?= html(fmt_number((float) $line['quantity'], 2)) ?></td>
+                        <td class="right"><?= html(fmt_money((float) $line['amount'])) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </tbody>
+        <?php if ($lines !== []): ?>
+            <tfoot>
+                <tr>
+                    <td colspan="4"><?= html(fmt_number((float) count($lines), 0)) ?> regels</td>
+                    <td class="right"><?= html(fmt_number($totalQty, 2)) ?></td>
+                    <td class="right"><?= html(fmt_money($totalAmount)) ?></td>
+                </tr>
+            </tfoot>
+        <?php endif; ?>
+    </table>
+    <?php
+    json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
+}
+
 if ($section === 'table_top_products') {
     if (!isset($periods[$period])) {
         json_response(['error' => 'Ongeldige periode'], 400);
@@ -1303,8 +1410,7 @@ if ($section === 'table_top_products') {
             continue;
         }
 
-        $lineType = normalize((string) ($row['Type'] ?? ''));
-        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+        if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
 
@@ -1455,8 +1561,7 @@ if ($section === 'table_top_customers') {
             continue;
         }
 
-        $lineType = normalize((string) ($row['Type'] ?? ''));
-        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+        if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
 
@@ -1619,8 +1724,7 @@ if ($section === 'inbound_totals' || $section === 'inbound_stats' || $section ==
     $lineSequence = 0;
 
     foreach ($purchaseOrderLines as $line) {
-        $lineType = normalize((string) ($line['Type'] ?? ''));
-        if ($lineType !== '' && strpos($lineType, 'ITEM') === false) {
+        if (!sales_line_type_is_item((string) ($line['Type'] ?? ''))) {
             continue;
         }
 

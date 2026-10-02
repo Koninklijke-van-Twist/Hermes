@@ -1784,6 +1784,21 @@ function odata_url_with_query(string $url, array $query): string
     return odata_rebuild_url($parts, $query);
 }
 
+/**
+ * hermes_scope hoort in de filecache-sleutel (bedrijf, afdeling, jaar, week)
+ * maar niet in de OData-aanroep naar Mímir of BC.
+ */
+function odata_url_without_hermes_scope(string $url): string
+{
+    $query = odata_url_query($url);
+    if (!array_key_exists('hermes_scope', $query)) {
+        return $url;
+    }
+    unset($query['hermes_scope']);
+
+    return odata_url_with_query($url, $query);
+}
+
 function odata_url_query(string $url): array
 {
     $parts = parse_url($url);
@@ -2047,8 +2062,9 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         $ttlSeconds = odata_nightly_cache_ttl();
     }
     $ttlSeconds = max(1, (int) $ttlSeconds);
+    $upstreamUrl = odata_url_without_hermes_scope($url);
     if (isset($GLOBALS['HERMES_ODATA_BC_FETCH']) && is_callable($GLOBALS['HERMES_ODATA_BC_FETCH'])) {
-        return $GLOBALS['HERMES_ODATA_BC_FETCH']($url, $auth, $ttlSeconds);
+        return $GLOBALS['HERMES_ODATA_BC_FETCH']($upstreamUrl, $auth, $ttlSeconds);
     }
 
     $cacheKey = build_cache_key($url, $auth);
@@ -2076,7 +2092,7 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
 
     odata_recovery_reset_if_top();
     $all = [];
-    $next = $url;
+    $next = $upstreamUrl;
 
     while ($next) {
         try {
@@ -2107,6 +2123,7 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
 
 function odata_get_json(string $url, array $auth): array
 {
+    $url = odata_url_without_hermes_scope($url);
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
