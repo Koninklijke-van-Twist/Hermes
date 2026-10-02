@@ -56,6 +56,11 @@ function consolelog($text)
  * een gerelateerde leverancier of projectplanningsregel op en breekt de hele
  * datumreeks af als die ontbreekt. Bij live-fetch (nightly of refresh=1) splitst
  * Hermes die reeks en slaat alleen een venster van minder dan twee dagen over.
+ * Dat geldt ook als pagina 1 nog lukte en pas een latere @odata.nextLink-pagina
+ * RecordNotFound geeft: de deels gelezen pagina's van dat venster gaan weg en
+ * de datumsplit draait over de oorspronkelijke venster-URL. Mímir levert één
+ * value-array (geen nextLink in Hermes); faalt die query, dan splitst dezelfde
+ * recovery. De directe BC-route (en Mímir-fallback) pagineren wél via nextLink.
  * Raakt het splitbudget (48) op, dan gaat de oorspronkelijke BC-fout door; een
  * deels geslaagde samenvoeging wordt dan niet als fetched=true bewaard.
  * Timeouts, HTTP 5xx en andere 4xx blijven een echte fout. Klant- en
@@ -1251,6 +1256,9 @@ function odata_mimir_query(string $company, string $table, array $odataQuery, in
             }
             $url = odata_company_url($env, $company, $table, $params);
             $cacheTtl = $ttlSeconds > 0 ? $ttlSeconds : odata_nightly_cache_ttl();
+            if (odata_semantic_is_missing_record($exception) && odata_live_fetch_enabled()) {
+                return odata_handle_missing_record($url, [], $cacheTtl, $exception);
+            }
             return odata_finish_bc_semantic_for_request($url, [], $cacheTtl, $exception);
         }
     };
@@ -1594,6 +1602,9 @@ function odata_mimir_section_result(callable $fetch, string $cacheUrl, array $au
     try {
         return $fetch();
     } catch (ODataBcSemanticException $exception) {
+        if (odata_semantic_is_missing_record($exception) && odata_live_fetch_enabled()) {
+            return odata_handle_missing_record($cacheUrl, $auth, $ttlSeconds, $exception);
+        }
         return odata_finish_bc_semantic_for_request($cacheUrl, $auth, $ttlSeconds, $exception);
     }
 }
@@ -2014,7 +2025,9 @@ function odata_get_all_direct(string $url, array $auth, $ttlSeconds = null): arr
         try {
             $resp = odata_get_json($next, $auth);
         } catch (ODataBcSemanticException $exception) {
-            if ($all !== []) {
+            // Ontbrekend gerelateerd record op een latere pagina: deels gelezen
+            // rijen van dit venster verwerpen en datum-splitsen op $url.
+            if ($all !== [] && !odata_semantic_is_missing_record($exception)) {
                 throw $exception;
             }
             return odata_handle_missing_record($url, $auth, $ttlSeconds, $exception);
