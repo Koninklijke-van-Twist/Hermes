@@ -64,6 +64,66 @@ if (odata_semantic_is_missing_record($syntax)) {
     fail('een andere 4xx mag niet als ontbrekend record gelden');
 }
 
+$vendor233Text = 'In Business Central ontbreekt leverancier 233. Verkooporders (o.a. SR12600256, SR12601252, SR12600958) verwijzen daar nog naar via drop-shipment-leverancier op de regel.';
+$vendor2000Text = 'Inkooporder PO12600091 heeft Buy-from leverancier 2000, maar die leverancier bestaat niet (meer) in dit bedrijf.';
+$vendor999Text = 'In Business Central ontbreekt leverancier 999. Documenten verwijzen daar nog naar; de OData-pagina faalt daardoor bij het opzoeken van die leverancier.';
+
+$vendor233 = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => "The Vendor does not exist. Identification fields and values: No.='233'",
+]);
+if (strpos($vendor233, $vendor233Text) !== 0 || strpos($vendor233, 'Internal_RecordNotFound') === false) {
+    fail('vendor 233 EN moet de NL-tekst voorop zetten: ' . $vendor233);
+}
+$vendor233Nl = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => "De Vendor bestaat niet. Identificatievelden en waarden: Nr. = '233'",
+]);
+if (strpos($vendor233Nl, $vendor233Text) !== 0) {
+    fail('vendor 233 NL/Nr. moet dezelfde tekst geven: ' . $vendor233Nl);
+}
+
+$vendor2000 = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => "De Vendor bestaat niet. Identificatievelden en waarden: Nr.='2000'",
+]);
+if (strpos($vendor2000, $vendor2000Text) !== 0 || strpos($vendor2000, 'Internal_RecordNotFound') === false) {
+    fail('vendor 2000 NL moet de NL-tekst voorop zetten: ' . $vendor2000);
+}
+$vendor2000En = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => "The Vendor does not exist. Identification fields and values: No.='2000'",
+]);
+if (strpos($vendor2000En, $vendor2000Text) !== 0) {
+    fail('vendor 2000 EN/No. moet dezelfde tekst geven: ' . $vendor2000En);
+}
+
+$vendorOther = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => 'The Vendor does not exist. Identification fields and values: No.="999"',
+]);
+if (strpos($vendorOther, $vendor999Text) !== 0) {
+    fail('ander vendornummer moet de algemene NL-zin krijgen: ' . $vendorOther);
+}
+
+$customerMissing = odata_bc_semantic_exception_message([
+    'status' => 404,
+    'code' => 'Internal_RecordNotFound',
+    'message' => "The Customer does not exist. Identification fields and values: No.='233'",
+]);
+if (strpos($customerMissing, 'ontbreekt leverancier') !== false
+    || strpos($customerMissing, 'BC OData 404 Internal_RecordNotFound: The Customer does not exist.') !== 0) {
+    fail('een andere tabel mag niet de vendor-tekst krijgen: ' . $customerMissing);
+}
+if (!odata_semantic_is_missing_record(new ODataBcSemanticException($vendor233))) {
+    fail('de vriendelijke vendor-tekst moet RecordNotFound blijven');
+}
+
 $open = odata_date_window_from_filter('LVS_Order_Intake_Date ge 2024-01-01');
 if ($open === null || $open['field'] !== 'LVS_Order_Intake_Date') {
     fail('open datumfilter werd niet herkend');
