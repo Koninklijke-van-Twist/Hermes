@@ -4,7 +4,8 @@
  * Verkoopregels (SalesLines) die het omzetdashboard als verkocht artikel telt.
  *
  * BC levert het regeltype in de taal van de pagina. Engels is ITEM, Nederlands
- * is Artikel. Een lege Type blijft mee (zelfde gedrag als voorheen).
+ * is Artikel. Alleen die exacte waarden (na normalize). Charge (Item) is
+ * vracht/handling en telt niet mee. Een lege Type blijft mee.
  */
 
 function sales_line_type_is_item(string $type): bool
@@ -14,7 +15,7 @@ function sales_line_type_is_item(string $type): bool
         return true;
     }
 
-    return strpos($normalized, 'ITEM') !== false || strpos($normalized, 'ARTIKEL') !== false;
+    return $normalized === 'ITEM' || $normalized === 'ARTIKEL';
 }
 
 function sales_line_shipped_quantity(float $quantity, float $outstanding): float

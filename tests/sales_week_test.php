@@ -37,7 +37,7 @@ assert_true('artikel met spaties telt', sales_line_type_is_item('  artikel  '));
 assert_true('ITEM telt als artikel', sales_line_type_is_item('ITEM'));
 assert_true('Item telt als artikel', sales_line_type_is_item('Item'));
 assert_true('lege Type blijft mee', sales_line_type_is_item(''));
-assert_true('Charge (Item) blijft mee', sales_line_type_is_item('Charge (Item)'));
+assert_true('Charge (Item) valt af', sales_line_type_is_item('Charge (Item)') === false);
 assert_true('Resource valt af', sales_line_type_is_item('Resource') === false);
 assert_true('G/L Account valt af', sales_line_type_is_item('G/L Account') === false);
 assert_true('Grootboekrekening valt af', sales_line_type_is_item('Grootboekrekening') === false);
