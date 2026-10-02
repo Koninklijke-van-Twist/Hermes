@@ -367,16 +367,73 @@ function odata_mimir_bc_semantic_from_response(int $httpCode, $decoded, string $
     ];
 }
 
+/**
+ * Vendor.Get op een ontbrekend nummer. Herkent de EN- en NL-BC-tekst
+ * ("The Vendor does not exist" / "De Vendor bestaat niet") en het nummer
+ * uit No.='…' of Nr.='…'. null als het geen ontbrekende Vendor is.
+ */
+function odata_bc_missing_vendor_no(string $message): ?string
+{
+    $isMissing = preg_match('/\bThe\s+Vendor\s+does\s+not\s+exist\b/i', $message) === 1
+        || preg_match('/\bDe\s+Vendor\s+bestaat\s+niet\b/iu', $message) === 1;
+    if (!$isMissing) {
+        return null;
+    }
+    if (preg_match("/\\b(?:No|Nr)\\.?\\s*=\\s*'([^']*)'/u", $message, $match) !== 1
+        && preg_match('/\b(?:No|Nr)\.?\s*=\s*"([^"]*)"/u', $message, $match) !== 1) {
+        return null;
+    }
+    $no = trim($match[1]);
+    if ($no === '' || strlen($no) > 40) {
+        return null;
+    }
+    return $no;
+}
+
+/**
+ * Dashboardtekst voor een ontbrekende Vendor. Bekende weesnummers noemen
+ * de documenten; elk ander nummer krijgt een algemene NL-zin.
+ */
+function odata_bc_missing_vendor_explanation(string $vendorNo): string
+{
+    if ($vendorNo === '233') {
+        return 'In Business Central ontbreekt leverancier 233. Verkooporders (o.a. SR12600256, SR12601252, SR12600958) verwijzen daar nog naar via drop-shipment-leverancier op de regel.';
+    }
+    if ($vendorNo === '2000') {
+        return 'Inkooporder PO12600091 heeft Buy-from leverancier 2000, maar die leverancier bestaat niet (meer) in dit bedrijf.';
+    }
+    return 'In Business Central ontbreekt leverancier ' . $vendorNo
+        . '. Documenten verwijzen daar nog naar; de OData-pagina faalt daardoor bij het opzoeken van die leverancier.';
+}
+
 function odata_bc_semantic_exception_message(array $semantic): string
 {
     $code = trim((string) ($semantic['code'] ?? ''));
     $message = trim(preg_replace('/\s+/', ' ', (string) ($semantic['message'] ?? '')) ?? '');
+    $status = (int) ($semantic['status'] ?? 0);
+    $label = $code !== '' ? $code : 'OData';
+    $prefix = 'BC OData ' . ($status >= 400 ? (string) $status . ' ' : '') . $label;
+
+    if ($code === 'Internal_RecordNotFound') {
+        $vendorNo = odata_bc_missing_vendor_no($message);
+        if ($vendorNo !== null) {
+            $snippet = $message;
+            if (strlen($snippet) > 160) {
+                $snippet = substr($snippet, 0, 160) . '…';
+            }
+            // De code blijft staan: datumsplit herkent Internal_RecordNotFound in de tekst.
+            $text = odata_bc_missing_vendor_explanation($vendorNo) . ' — ' . $prefix;
+            if ($snippet !== '') {
+                $text .= ': ' . $snippet;
+            }
+            return $text;
+        }
+    }
+
     if (strlen($message) > 300) {
         $message = substr($message, 0, 300) . '…';
     }
-    $status = (int) ($semantic['status'] ?? 0);
-    $label = $code !== '' ? $code : 'OData';
-    $text = 'BC OData ' . ($status >= 400 ? (string) $status . ' ' : '') . $label;
+    $text = $prefix;
     if ($message !== '') {
         $text .= ': ' . $message;
     }
