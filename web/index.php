@@ -200,6 +200,23 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
             margin: 8px 12px 0 12px;
         }
 
+        .week-sales-scroll {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        #sec-week-sales .week-sales-scroll table {
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        #sec-week-sales .week-sales-scroll thead th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: #fafcff;
+        }
+
         #sec-week-sales table tfoot td {
             font-weight: 700;
             background: #fafcff;

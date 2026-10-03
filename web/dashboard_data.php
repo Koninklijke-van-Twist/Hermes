@@ -1286,11 +1286,31 @@ if ($section === 'table_week_sales') {
     $errors = [];
     $requestedYear = (int) ($_GET['week_sales_year'] ?? 0);
     $requestedWeek = (int) ($_GET['week_sales_week'] ?? 0);
-    $selection = sales_week_selection_from_request($requestedYear, $requestedWeek);
+    $scope = sales_week_department_scope($departmentFilter, $allowedDepartmentCodes);
+    $includeDepartment = function (array $row) use ($departmentFilter, $allowedDepartmentCodes): bool {
+        return matches_department_scope(
+            $row,
+            ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'],
+            $departmentFilter,
+            $allowedDepartmentCodes
+        );
+    };
+    $futureRows = [];
+    try {
+        $futureRows = sales_week_load_future_lines(
+            (string) $environment,
+            $selectedCompany,
+            $scope,
+            $auth
+        );
+    } catch (Throwable $e) {
+        $errors[] = 'SalesLines: ' . $e->getMessage();
+    }
+    $futureWeeksWithSales = sales_week_future_weeks_with_sales($futureRows, null, $includeDepartment);
+    $selection = sales_week_selection_from_request($requestedYear, $requestedWeek, null, $futureWeeksWithSales);
     $year = (int) $selection['year'];
     $week = (int) $selection['week'];
     $bounds = sales_week_bounds($year, $week);
-    $scope = sales_week_department_scope($departmentFilter, $allowedDepartmentCodes);
     $salesLines = [];
     try {
         $salesLines = sales_week_load_lines(
@@ -1309,18 +1329,11 @@ if ($section === 'table_week_sales') {
         $salesLines,
         $bounds['start'],
         $bounds['end'],
-        function (array $row) use ($departmentFilter, $allowedDepartmentCodes): bool {
-            return matches_department_scope(
-                $row,
-                ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'],
-                $departmentFilter,
-                $allowedDepartmentCodes
-            );
-        }
+        $includeDepartment
     );
 
-    $yearOptions = sales_week_year_options();
-    $weekCount = sales_week_count($year);
+    $yearOptions = sales_week_year_options(null, $futureWeeksWithSales);
+    $listedWeeks = sales_week_listed_weeks($year, $futureWeeksWithSales);
     $totalQty = 0.0;
     $totalAmount = 0.0;
     foreach ($lines as $line) {
@@ -1344,15 +1357,16 @@ if ($section === 'table_week_sales') {
             <div class="field">
                 <label for="week_sales_week">Weeknummer</label>
                 <select id="week_sales_week" class="week-sales-select" data-week-sales="week">
-                    <?php for ($optionWeek = 1; $optionWeek <= $weekCount; $optionWeek++): ?>
+                    <?php foreach ($listedWeeks as $optionWeek): ?>
                         <option value="<?= html((string) $optionWeek) ?>" <?= $optionWeek === $week ? 'selected' : '' ?>><?= html(sales_week_option_label($year, $optionWeek)) ?></option>
-                    <?php endfor; ?>
+                    <?php endforeach; ?>
                 </select>
             </div>
         </div>
     </div>
     <p class="small week-sales-range">Leverdatum <?= html($bounds['start']->format('d-m-Y')) ?> t/m
         <?= html($bounds['end']->format('d-m-Y')) ?></p>
+    <div class="week-sales-scroll">
     <table>
         <thead>
             <tr>
@@ -1392,6 +1406,7 @@ if ($section === 'table_week_sales') {
             </tfoot>
         <?php endif; ?>
     </table>
+    </div>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
