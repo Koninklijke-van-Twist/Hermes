@@ -1003,6 +1003,10 @@ if ($section === 'table_omzet_productgroep') {
             continue;
         }
 
+        if (!sales_line_document_is_order((string) ($row['Document_Type'] ?? ''))) {
+            continue;
+        }
+
         if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
@@ -1034,6 +1038,10 @@ if ($section === 'table_omzet_productgroep') {
 
     foreach ($salesLines as $row) {
         if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
+            continue;
+        }
+
+        if (!sales_line_document_is_order((string) ($row['Document_Type'] ?? ''))) {
             continue;
         }
 
@@ -1425,6 +1433,10 @@ if ($section === 'table_top_products') {
             continue;
         }
 
+        if (!sales_line_document_is_order((string) ($row['Document_Type'] ?? ''))) {
+            continue;
+        }
+
         if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
             continue;
         }
@@ -1573,6 +1585,10 @@ if ($section === 'table_top_customers') {
 
     foreach ($salesLines as $row) {
         if (!matches_department_scope($row, ['Shortcut_Dimension_1_Code', 'Shortcut_Dimension_2_Code'], $departmentFilter, $allowedDepartmentCodes)) {
+            continue;
+        }
+
+        if (!sales_line_document_is_order((string) ($row['Document_Type'] ?? ''))) {
             continue;
         }
 

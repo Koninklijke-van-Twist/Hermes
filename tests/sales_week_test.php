@@ -43,6 +43,52 @@ assert_true('G/L Account valt af', sales_line_type_is_item('G/L Account') === fa
 assert_true('Grootboekrekening valt af', sales_line_type_is_item('Grootboekrekening') === false);
 assert_true('Toeslag valt af', sales_line_type_is_item('Toeslag') === false);
 
+assert_true('Order telt als verkooporder', sales_line_document_is_order('Order'));
+assert_true('order in kleine letters telt', sales_line_document_is_order('order'));
+assert_true('ORDER telt', sales_line_document_is_order('ORDER'));
+assert_true('Order met spaties telt', sales_line_document_is_order('  Order  '));
+assert_true('Retourorder valt af', sales_line_document_is_order('Retourorder') === false);
+assert_true('Return Order valt af', sales_line_document_is_order('Return Order') === false);
+assert_true('Creditnota valt af', sales_line_document_is_order('Creditnota') === false);
+assert_true('Credit Memo valt af', sales_line_document_is_order('Credit Memo') === false);
+assert_true('Factuur valt af', sales_line_document_is_order('Factuur') === false);
+assert_true('Invoice valt af', sales_line_document_is_order('Invoice') === false);
+assert_true('Offerte valt af', sales_line_document_is_order('Offerte') === false);
+assert_true('Quote valt af', sales_line_document_is_order('Quote') === false);
+assert_true('Raamcontract valt af', sales_line_document_is_order('Raamcontract') === false);
+assert_true('Blanket Order valt af', sales_line_document_is_order('Blanket Order') === false);
+assert_true('lege Document_Type valt af', sales_line_document_is_order('') === false);
+
+$returnBounds = sales_week_bounds(2026, 41);
+$returnRow = [
+    'Document_No' => 'SAR2600044',
+    'Document_Type' => 'Retourorder',
+    'Shipment_Date' => '2026-10-07',
+    'No' => 'ART-1',
+    'Description' => 'Retour',
+    'Type' => 'Artikel',
+    'Quantity' => 1,
+    'Outstanding_Quantity' => 0,
+    'Line_Amount' => 852.96,
+    'Sell_to_Customer_No' => '7000538',
+    'Sell_to_Customer_Name' => 'Hunter',
+];
+assert_true(
+    'ontvangen retourorder telt niet als verkoop',
+    sales_week_line_from_row($returnRow, $returnBounds['start'], $returnBounds['end']) === null
+);
+$orderRow = $returnRow;
+$orderRow['Document_Type'] = 'Order';
+$orderRow['Document_No'] = 'VO2600044';
+$orderLine = sales_week_line_from_row($orderRow, $returnBounds['start'], $returnBounds['end']);
+assert_true(
+    'dezelfde regel als Order telt het bedrag',
+    is_array($orderLine)
+        && abs((float) $orderLine['amount'] - 852.96) < 0.00001
+        && $orderLine['customer'] === '7000538 - Hunter'
+        && $orderLine['document_no'] === 'VO2600044'
+);
+
 $todayMidnight = new DateTimeImmutable('today');
 $parsedToday = sales_local_calendar_date($todayMidnight->format('Y-m-d') . 'T14:34:00');
 assert_true(
@@ -56,6 +102,10 @@ $dashboardSource = (string) file_get_contents(dirname(__DIR__) . '/web/dashboard
 assert_true(
     'dashboard gebruikt de gedeelde type-check',
     strpos($dashboardSource, 'sales_line_type_is_item') !== false
+);
+assert_true(
+    'omzet-tabellen tellen alleen verkooporders',
+    substr_count($dashboardSource, 'sales_line_document_is_order') >= 4
 );
 assert_true(
     'oude ITEM-only check is weg',
@@ -176,6 +226,7 @@ assert_true('in een toekomstig jaar alleen weken met verkopen', $futureOnlyWeeks
 
 $futureRows = [
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-12',
         'No' => 'ART-42',
         'Description' => 'Later',
@@ -186,6 +237,7 @@ $futureRows = [
         'Shortcut_Dimension_1_Code' => '15',
     ],
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-05',
         'No' => 'ART-41',
         'Description' => 'Nog open',
@@ -196,6 +248,7 @@ $futureRows = [
         'Shortcut_Dimension_1_Code' => '15',
     ],
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-19',
         'No' => 'RES-2',
         'Description' => 'Uren',
@@ -206,6 +259,7 @@ $futureRows = [
         'Shortcut_Dimension_1_Code' => '15',
     ],
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-02',
         'No' => 'ART-40',
         'Description' => 'Vandaag',
@@ -216,6 +270,7 @@ $futureRows = [
         'Shortcut_Dimension_1_Code' => '15',
     ],
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-12',
         'No' => 'ART-ELSE',
         'Description' => 'Andere afdeling',
@@ -226,6 +281,7 @@ $futureRows = [
         'Shortcut_Dimension_1_Code' => '40',
     ],
     [
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-10-26',
         'No' => 'CHG-1',
         'Description' => 'Vracht',
@@ -233,6 +289,17 @@ $futureRows = [
         'Quantity' => 1,
         'Outstanding_Quantity' => 0,
         'Line_Amount' => 12,
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Document_Type' => 'Retourorder',
+        'Shipment_Date' => '2026-10-19',
+        'No' => 'ART-RET',
+        'Description' => 'Ontvangen retour',
+        'Type' => 'Artikel',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 852.96,
         'Shortcut_Dimension_1_Code' => '15',
     ],
 ];
@@ -285,6 +352,20 @@ assert_true(
 assert_true('request bevat de weekfilter', strpos($url15, 'Shipment_Date%20ge%202026-09-28') !== false || strpos($url15, 'Shipment_Date ge 2026-09-28') !== false);
 assert_true('request bevat het weekeinde', strpos(rawurldecode($url15), 'Shipment_Date le 2026-10-04') !== false);
 assert_true('select bevat Document_No en Sell_to_Customer_Name', strpos(rawurldecode($url15), 'Sell_to_Customer_Name') !== false && strpos(rawurldecode($url15), 'Outstanding_Quantity') !== false);
+assert_true('weekselect bevat Document_Type', strpos(sales_week_odata_select(), 'Document_Type') !== false && strpos(rawurldecode($url15), 'Document_Type') !== false);
+assert_true(
+    'weekfilter houdt alleen verkooporders',
+    strpos(sales_week_odata_filter($currentBounds['start'], $currentBounds['end']), "Document_Type eq 'Order'") !== false
+);
+$salesSource = odata_source('SalesLines', '2024-01-01');
+assert_true(
+    'SalesLines selecteert Document_Type',
+    strpos((string) ($salesSource['params']['$select'] ?? ''), 'Document_Type') !== false
+);
+assert_true(
+    'SalesLines filtert op verkooporder',
+    ($salesSource['params']['$filter'] ?? '') === "Shipment_Date ge 2024-01-01 and Document_Type eq 'Order'"
+);
 assert_true('scope zit in de URL', strpos(rawurldecode($url15), 'selected:15') !== false);
 assert_true('afdeling zit niet in het OData-filter', strpos(sales_week_odata_filter($currentBounds['start'], $currentBounds['end']), '15') === false);
 
@@ -297,6 +378,7 @@ $bounds39 = sales_week_bounds(2026, 39);
 $rows = [
     [
         'Document_No' => 'VF100',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-22',
         'No' => 'ART-1',
         'Description' => 'Ring',
@@ -310,6 +392,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF100',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-22',
         'No' => 'ART-0',
         'Description' => 'Eerder',
@@ -323,6 +406,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF200',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-23',
         'No' => 'RES-1',
         'Description' => 'Uren',
@@ -336,6 +420,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF300',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-20',
         'No' => 'ART-9',
         'Description' => 'Buiten de week',
@@ -349,6 +434,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF400',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-24',
         'No' => 'ART-2',
         'Description' => 'Open',
@@ -362,6 +448,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF500',
+        'Document_Type' => 'Order',
         'Shipment_Date' => '2026-09-25',
         'No' => 'ART-3',
         'Description' => 'Andere afdeling',
@@ -375,6 +462,7 @@ $rows = [
     ],
     [
         'Document_No' => 'VF050',
+        'Document_Type' => 'order',
         'Shipment_Date' => '2026-09-22',
         'No' => 'ART-1',
         'Description' => 'Ring',
@@ -384,6 +472,20 @@ $rows = [
         'Line_Amount' => 10,
         'Sell_to_Customer_No' => 'K100',
         'Sell_to_Customer_Name' => '',
+        'Shortcut_Dimension_1_Code' => '15',
+    ],
+    [
+        'Document_No' => 'SAR2600044',
+        'Document_Type' => 'Retourorder',
+        'Shipment_Date' => '2026-09-22',
+        'No' => 'ART-RET',
+        'Description' => 'Ontvangen retour',
+        'Type' => 'Artikel',
+        'Quantity' => 1,
+        'Outstanding_Quantity' => 0,
+        'Line_Amount' => 852.96,
+        'Sell_to_Customer_No' => '7000538',
+        'Sell_to_Customer_Name' => 'Hunter',
         'Shortcut_Dimension_1_Code' => '15',
     ],
 ];
@@ -397,6 +499,8 @@ $lines = sales_week_collect_lines(
     }
 );
 assert_true('alleen geleverde artikelregels van afdeling 15', count($lines) === 3, (string) count($lines));
+$lineDocuments = array_column($lines, 'document_no');
+assert_true('ontvangen retourorder staat niet in de week', in_array('SAR2600044', $lineDocuments, true) === false);
 assert_true('sorteer op document dan artikel', $lines[0]['document_no'] === 'VF050' && $lines[1]['document_no'] === 'VF100' && $lines[1]['item'] === 'ART-0 - Eerder');
 assert_true('Artikel-regel houdt klant en geschaald bedrag', $lines[2]['customer'] === 'K100 - Acme' && abs($lines[2]['quantity'] - 6.0) < 0.00001 && abs($lines[2]['amount'] - 60.0) < 0.00001 && $lines[2]['item'] === 'ART-1 - Ring');
 assert_true('klant zonder naam blijft het nummer', $lines[0]['customer'] === 'K100');

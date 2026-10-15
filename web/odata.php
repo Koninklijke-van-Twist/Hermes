@@ -1838,12 +1838,34 @@ function odata_semantic_is_missing_record(ODataBcSemanticException $exception): 
         || strpos($message, 'Internal_DataNotFoundFilter') !== false;
 }
 
+function odata_filter_without_order_document_clause(string $filter): string
+{
+    $suffix = ' and ' . odata_sales_order_document_filter();
+    $filter = trim($filter);
+    $suffixLength = strlen($suffix);
+    if ($suffixLength > 0 && strlen($filter) > $suffixLength && substr($filter, -$suffixLength) === $suffix) {
+        return trim(substr($filter, 0, -$suffixLength));
+    }
+
+    return $filter;
+}
+
+function odata_recovery_window_filter(string $originalFilter, string $field, DateTimeImmutable $start, DateTimeImmutable $end): string
+{
+    $window = odata_window_filter($field, $start, $end);
+    if (odata_filter_without_order_document_clause($originalFilter) === trim($originalFilter)) {
+        return $window;
+    }
+
+    return $window . ' and ' . odata_sales_order_document_filter();
+}
+
 /**
  * @return array{field: string, start: DateTimeImmutable, end: DateTimeImmutable}|null
  */
 function odata_date_window_from_filter(string $filter): ?array
 {
-    $filter = trim($filter);
+    $filter = odata_filter_without_order_document_clause($filter);
     if (preg_match('/^([A-Za-z_][A-Za-z0-9_]*)\s+ge\s+(\d{4}-\d{2}-\d{2})$/', $filter, $match) === 1) {
         $start = DateTimeImmutable::createFromFormat('!Y-m-d', $match[2]);
         if (!$start instanceof DateTimeImmutable) {
@@ -1970,12 +1992,12 @@ function odata_attempt_date_recovery(string $url, array $auth, int $ttlSeconds, 
     $GLOBALS['HERMES_ODATA_RECOVERY_DEPTH'] = $depth + 1;
     try {
         $left = odata_get_all(
-            odata_url_with_filter($url, odata_window_filter($window['field'], $window['start'], $mid)),
+            odata_url_with_filter($url, odata_recovery_window_filter($filter, $window['field'], $window['start'], $mid)),
             $auth,
             $ttlSeconds
         );
         $right = odata_get_all(
-            odata_url_with_filter($url, odata_window_filter($window['field'], $mid, $window['end'])),
+            odata_url_with_filter($url, odata_recovery_window_filter($filter, $window['field'], $mid, $window['end'])),
             $auth,
             $ttlSeconds
         );
