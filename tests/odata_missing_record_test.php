@@ -139,6 +139,32 @@ if ($closed === null || (int) $closed['start']->diff($closed['end'])->format('%a
 if (odata_date_window_from_filter("No eq '233'") !== null) {
     fail('een sleutel-filter mag niet als datumvenster gelden');
 }
+$withOrder = odata_date_window_from_filter("Shipment_Date ge 2024-01-01 and Document_Type eq 'Order'");
+if ($withOrder === null || $withOrder['field'] !== 'Shipment_Date') {
+    fail('verkooporderfilter moet het datumvenster houden');
+}
+$closedWithOrder = odata_date_window_from_filter("Shipment_Date ge 2024-01-01 and Shipment_Date lt 2024-01-03 and Document_Type eq 'Order'");
+if ($closedWithOrder === null || (int) $closedWithOrder['start']->diff($closedWithOrder['end'])->format('%a') !== 2) {
+    fail('gesloten venster met documenttype klopt niet');
+}
+$keptOrder = odata_recovery_window_filter(
+    "Shipment_Date ge 2024-01-01 and Document_Type eq 'Order'",
+    'Shipment_Date',
+    new DateTimeImmutable('2024-01-01'),
+    new DateTimeImmutable('2024-06-01')
+);
+if ($keptOrder !== "Shipment_Date ge 2024-01-01 and Shipment_Date lt 2024-06-01 and Document_Type eq 'Order'") {
+    fail('datumsplit moet de orderclausule houden: ' . $keptOrder);
+}
+$plainWindow = odata_recovery_window_filter(
+    'LVS_Order_Intake_Date ge 2024-01-01',
+    'LVS_Order_Intake_Date',
+    new DateTimeImmutable('2024-01-01'),
+    new DateTimeImmutable('2024-02-01')
+);
+if ($plainWindow !== 'LVS_Order_Intake_Date ge 2024-01-01 and LVS_Order_Intake_Date lt 2024-02-01') {
+    fail('een bron zonder orderclausule mag die niet krijgen: ' . $plainWindow);
+}
 if (odata_recovery_call_budget() !== 48) {
     fail('standaard splitbudget is 48');
 }

@@ -16,6 +16,17 @@ function odata_history_from_date(?DateTimeImmutable $today = null): string
     return $today->setDate($fromYear, 1, 1)->format('Y-m-d');
 }
 
+/**
+ * Positief filter op verkooporders.
+ * Document_Type komt gelokaliseerd terug: Nederlands én Engels gebruiken
+ * "Order" voor een verkooporder. Een retour is "Retourorder", geen "Return Order".
+ * Datumsplit plakt deze clausule weer achter het venster.
+ */
+function odata_sales_order_document_filter(): string
+{
+    return "Document_Type eq 'Order'";
+}
+
 function odata_sources(?string $fromDate = null): array
 {
     if ($fromDate === null) {
@@ -53,8 +64,8 @@ function odata_sources(?string $fromDate = null): array
         'SalesLines' => [
             'entity' => 'SalesLines',
             'params' => [
-                '$select' => 'Document_No,Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,KVT_Total_Costs_Line_LCY,KVT_Margin,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
-                '$filter' => "Shipment_Date ge $fromDate",
+                '$select' => 'Document_No,Document_Type,Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,KVT_Total_Costs_Line_LCY,KVT_Margin,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code',
+                '$filter' => "Shipment_Date ge $fromDate and " . odata_sales_order_document_filter(),
             ],
         ],
         'AppItemCard' => [

@@ -18,6 +18,18 @@ function sales_line_type_is_item(string $type): bool
     return $normalized === 'ITEM' || $normalized === 'ARTIKEL';
 }
 
+/**
+ * Document_Type komt in de taal van de pagina terug.
+ * Een verkooporder is in het Nederlands én het Engels "Order".
+ * Een ontvangen retour (Retourorder, Outstanding_Quantity 0, positief
+ * Line_Amount) is geen omzet. Alleen een exacte match, hoofdletterongevoelig,
+ * zodat "Retourorder" niet blijft hangen aan het woord order.
+ */
+function sales_line_document_is_order(string $documentType): bool
+{
+    return strcasecmp(trim($documentType), 'Order') === 0;
+}
+
 function sales_line_shipped_quantity(float $quantity, float $outstanding): float
 {
     $shipped = $quantity - $outstanding;
@@ -356,12 +368,14 @@ function sales_week_cache_key(string $company, string $departmentScope, int $yea
 
 function sales_week_odata_select(): string
 {
-    return 'Document_No,Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code';
+    return 'Document_No,Document_Type,Shipment_Date,No,Description,Type,Quantity,Outstanding_Quantity,Line_Amount,Sell_to_Customer_No,Sell_to_Customer_Name,Shortcut_Dimension_1_Code,Shortcut_Dimension_2_Code';
 }
 
 function sales_week_odata_filter(DateTimeImmutable $start, DateTimeImmutable $end): string
 {
-    return 'Shipment_Date ge ' . $start->format('Y-m-d') . ' and Shipment_Date le ' . $end->format('Y-m-d');
+    return 'Shipment_Date ge ' . $start->format('Y-m-d')
+        . ' and Shipment_Date le ' . $end->format('Y-m-d')
+        . ' and ' . odata_sales_order_document_filter();
 }
 
 function sales_week_option_label(int $year, int $week): string
@@ -408,6 +422,10 @@ function sales_week_item_label(string $itemNo, string $description): string
  */
 function sales_week_line_from_row(array $row, DateTimeImmutable $start, DateTimeImmutable $end)
 {
+    if (!sales_line_document_is_order((string) ($row['Document_Type'] ?? ''))) {
+        return null;
+    }
+
     if (!sales_line_type_is_item((string) ($row['Type'] ?? ''))) {
         return null;
     }
