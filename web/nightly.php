@@ -211,7 +211,7 @@ while (!empty($queue)) {
             (string) $section['entity'],
             is_array($section['params'] ?? null) ? $section['params'] : []
         );
-        $rows = odata_get_all($url, $auth, odata_nightly_cache_ttl());
+        $rows = odata_get_all($url, $auth, odata_source_cache_ttl((string) ($section['source_id'] ?? '')));
         $rowCount = count($rows);
         $notice = odata_take_bc_semantic_notice();
         $partial = odata_take_partial_notice();

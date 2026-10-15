@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/customer_revenue.php';
+
 function odata_dashboard_companies(): array
 {
     return [
@@ -16,6 +18,12 @@ function odata_history_from_date(?DateTimeImmutable $today = null): string
     return $today->setDate($fromYear, 1, 1)->format('Y-m-d');
 }
 
+function odata_history_to_date(?DateTimeImmutable $today = null): string
+{
+    $today = $today ?? new DateTimeImmutable('today');
+    return $today->setDate((int) $today->format('Y'), 12, 31)->format('Y-m-d');
+}
+
 /**
  * Positief filter op verkooporders.
  * Document_Type komt gelokaliseerd terug: Nederlands én Engels gebruiken
@@ -27,10 +35,13 @@ function odata_sales_order_document_filter(): string
     return "Document_Type eq 'Order'";
 }
 
-function odata_sources(?string $fromDate = null): array
+function odata_sources(?string $fromDate = null, ?string $toDate = null): array
 {
     if ($fromDate === null) {
         $fromDate = odata_history_from_date();
+    }
+    if ($toDate === null) {
+        $toDate = odata_history_to_date();
     }
 
     return [
@@ -83,8 +94,16 @@ function odata_sources(?string $fromDate = null): array
         'AppCustomerCard' => [
             'entity' => 'AppCustomerCard',
             'params' => [
-                '$select' => 'No,Name',
+                '$select' => customer_revenue_customer_select(),
             ],
+        ],
+        'Customer_Ledger_Entries' => [
+            'entity' => 'Customer_Ledger_Entries',
+            'params' => [
+                '$select' => customer_revenue_odata_select(),
+                '$filter' => customer_revenue_odata_filter($fromDate, $toDate),
+            ],
+            'cache_ttl' => customer_revenue_cache_ttl_seconds(),
         ],
         'AppPurchaseOrderPurchLines' => [
             'entity' => 'AppPurchaseOrderPurchLines',
@@ -103,9 +122,9 @@ function odata_sources(?string $fromDate = null): array
     ];
 }
 
-function odata_source(string $sourceId, ?string $fromDate = null): array
+function odata_source(string $sourceId, ?string $fromDate = null, ?string $toDate = null): array
 {
-    $sources = odata_sources($fromDate);
+    $sources = odata_sources($fromDate, $toDate);
     if (!isset($sources[$sourceId])) {
         throw new Exception("Onbekende OData-bron: $sourceId");
     }
@@ -113,11 +132,22 @@ function odata_source(string $sourceId, ?string $fromDate = null): array
     return $sources[$sourceId];
 }
 
-function odata_nightly_sections(?string $fromDate = null): array
+function odata_source_cache_ttl(string $sourceId): int
+{
+    $sources = odata_sources();
+    $configured = $sources[$sourceId]['cache_ttl'] ?? null;
+    if (is_int($configured) && $configured > 0) {
+        return $configured;
+    }
+
+    return odata_nightly_cache_ttl();
+}
+
+function odata_nightly_sections(?string $fromDate = null, ?string $toDate = null): array
 {
     $queue = [];
     foreach (odata_dashboard_companies() as $company) {
-        foreach (odata_sources($fromDate) as $sourceId => $source) {
+        foreach (odata_sources($fromDate, $toDate) as $sourceId => $source) {
             $queue[] = [
                 'id' => $company . ' / ' . $sourceId,
                 'company' => $company,

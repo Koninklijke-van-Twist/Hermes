@@ -94,70 +94,6 @@ function in_period(DateTimeImmutable $date, DateTimeImmutable $start, DateTimeIm
     return $date >= $start && $date <= $today;
 }
 
-function normalize(string $value): string
-{
-    return strtoupper(trim($value));
-}
-
-function code_matches(string $value, string $code): bool
-{
-    $normalizedValue = normalize($value);
-    if ($normalizedValue === '' || $code === '') {
-        return false;
-    }
-
-    if ($normalizedValue === $code) {
-        return true;
-    }
-
-    $pattern = '/(^|[^A-Z0-9])' . preg_quote($code, '/') . '([^A-Z0-9]|$)/';
-    return preg_match($pattern, $normalizedValue) === 1;
-}
-
-function matches_code_filter(array $row, array $fields, string $code): bool
-{
-    if ($code === '') {
-        return true;
-    }
-
-    foreach ($fields as $field) {
-        $value = (string) ($row[$field] ?? '');
-        if (code_matches($value, $code)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function matches_allowed_department_codes(array $row, array $fields, array $allowedCodes): bool
-{
-    if (empty($allowedCodes)) {
-        return true;
-    }
-
-    foreach ($allowedCodes as $code) {
-        if (matches_code_filter($row, $fields, (string) $code)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function matches_department_scope(array $row, array $fields, string $selectedCode, array $allowedCodes): bool
-{
-    if ($selectedCode !== '') {
-        if (!empty($allowedCodes) && !in_array($selectedCode, $allowedCodes, true)) {
-            return false;
-        }
-
-        return matches_code_filter($row, $fields, $selectedCode);
-    }
-
-    return matches_allowed_department_codes($row, $fields, $allowedCodes);
-}
-
 function period_value(array $totals, string $period): float
 {
     return (float) ($totals[$period] ?? 0);
@@ -746,6 +682,25 @@ if ($section === 'filter_options') {
         }
     }
 
+    try {
+        $customerRevenueEntries = customer_revenue_load_cached_source(
+            (string) $environment,
+            $selectedCompany,
+            'Customer_Ledger_Entries',
+            $auth
+        );
+    } catch (Throwable $e) {
+        $customerRevenueEntries = [];
+    }
+    foreach (customer_revenue_department_codes($customerRevenueEntries) as $normalizedValue => $value) {
+        if (!empty($allowedDepartmentCodes) && !in_array($normalizedValue, $allowedDepartmentCodes, true)) {
+            continue;
+        }
+        if (!isset($departmentOptions[$normalizedValue])) {
+            $departmentOptions[$normalizedValue] = $value;
+        }
+    }
+
     ksort($departmentOptions, SORT_NATURAL);
     if ($departmentFilter !== '' && !isset($departmentOptions[$departmentFilter]) && empty($allowedDepartmentCodes)) {
         $departmentOptions[$departmentFilter] = $departmentFilter;
@@ -1286,6 +1241,135 @@ if ($section === 'table_omzet_productgroep') {
             </div>
         </div>
     <?php endif; ?>
+    <?php
+    json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
+}
+
+if ($section === 'table_customer_revenue') {
+    $errors = [];
+    $selection = customer_revenue_selection(
+        (int) ($_GET['customer_revenue_year'] ?? 0),
+        (int) ($_GET['customer_revenue_month'] ?? 0),
+        $today
+    );
+    $revenueYear = (int) $selection['year'];
+    $revenueMonth = (int) $selection['month'];
+    $revenueQuery = customer_revenue_normalize_query((string) ($_GET['customer_revenue_q'] ?? ''));
+
+    $entries = [];
+    try {
+        $entries = customer_revenue_load_cached_source(
+            (string) $environment,
+            $selectedCompany,
+            'Customer_Ledger_Entries',
+            $auth
+        );
+    } catch (Throwable $e) {
+        $errors[] = 'Customer_Ledger_Entries: ' . $e->getMessage();
+    }
+
+    $customerCards = [];
+    try {
+        $customerCards = customer_revenue_load_cached_source(
+            (string) $environment,
+            $selectedCompany,
+            'AppCustomerCard',
+            $auth
+        );
+    } catch (Throwable $e) {
+        $errors[] = 'AppCustomerCard: ' . $e->getMessage();
+    }
+
+    $aggregated = customer_revenue_aggregate(
+        $entries,
+        $customerCards,
+        $revenueYear,
+        $revenueMonth,
+        $revenueQuery,
+        $departmentFilter,
+        $allowedDepartmentCodes
+    );
+    $revenueCustomers = $aggregated['customers'];
+    $revenueTotals = $aggregated['totals'];
+    $yearOptions = customer_revenue_year_options($today);
+    $monthLabel = nl_month_name($revenueMonth) . ' ' . $revenueYear;
+
+    ob_start();
+    ?>
+    <div class="table-title week-sales-head">
+        <div class="week-sales-heading">Omzet per klant</div>
+        <div class="week-sales-filters customer-revenue-filters">
+            <div class="field">
+                <label for="customer_revenue_year">Jaar</label>
+                <select id="customer_revenue_year" class="customer-revenue-select" data-customer-revenue="year">
+                    <?php foreach ($yearOptions as $optionYear): ?>
+                        <option value="<?= html((string) $optionYear) ?>" <?= $optionYear === $revenueYear ? 'selected' : '' ?>><?= html((string) $optionYear) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="field">
+                <label for="customer_revenue_month">Maand</label>
+                <select id="customer_revenue_month" class="customer-revenue-select" data-customer-revenue="month">
+                    <?php for ($optionMonth = 1; $optionMonth <= 12; $optionMonth++): ?>
+                        <option value="<?= html((string) $optionMonth) ?>" <?= $optionMonth === $revenueMonth ? 'selected' : '' ?>><?= html(nl_month_name($optionMonth)) ?></option>
+                    <?php endfor; ?>
+                </select>
+            </div>
+            <div class="field">
+                <label for="customer_revenue_q">Klantnaam of klantnummer</label>
+                <div class="customer-revenue-searchline">
+                    <input id="customer_revenue_q" class="customer-revenue-query" data-customer-revenue="q" type="search"
+                        value="<?= html($revenueQuery) ?>" placeholder="Naam bevat… of nummer" autocomplete="off">
+                    <button type="button" class="customer-revenue-search">Zoeken</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <p class="small week-sales-range">Geboekte omzet exclusief btw, inclusief creditnota's.
+        <?= html($monthLabel) ?> en jaar <?= html((string) $revenueYear) ?>. Bedrijf en afdeling volgen de filters bovenaan.</p>
+    <div class="week-sales-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Klantnummer</th>
+                    <th>Klantnaam</th>
+                    <th class="right"><?= html($monthLabel) ?></th>
+                    <th class="right">Jaar <?= html((string) $revenueYear) ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if ($revenueCustomers === []): ?>
+                    <tr>
+                        <td colspan="4">Geen klanten gevonden.</td>
+                    </tr>
+                <?php else: ?>
+                    <?php foreach ($revenueCustomers as $customer): ?>
+                        <?php
+                        $customerName = trim((string) ($customer['name'] ?? ''));
+                        if ($customerName === '') {
+                            $customerName = 'Onbekende klant';
+                        }
+                        ?>
+                        <tr>
+                            <td><?= html((string) ($customer['customer_no'] ?? '')) ?></td>
+                            <td><?= html($customerName) ?></td>
+                            <td class="right"><?= html(customer_revenue_format_cents((int) ($customer['month_cents'] ?? 0))) ?></td>
+                            <td class="right"><?= html(customer_revenue_format_cents((int) ($customer['year_cents'] ?? 0))) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+            <?php if ($revenueCustomers !== []): ?>
+                <tfoot>
+                    <tr>
+                        <td colspan="2"><?= html(fmt_number((float) ($revenueTotals['customers'] ?? 0), 0)) ?> klanten</td>
+                        <td class="right"><?= html(customer_revenue_format_cents((int) ($revenueTotals['month_cents'] ?? 0))) ?></td>
+                        <td class="right"><?= html(customer_revenue_format_cents((int) ($revenueTotals['year_cents'] ?? 0))) ?></td>
+                    </tr>
+                </tfoot>
+            <?php endif; ?>
+        </table>
+    </div>
     <?php
     json_response(['html' => render_with_errors((string) ob_get_clean(), $errors)]);
 }
