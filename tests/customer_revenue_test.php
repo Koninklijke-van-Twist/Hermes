@@ -227,6 +227,8 @@ $invalid = customer_revenue_aggregate(
 );
 assert_true('ongeldige datum en geen rij vallen weg', $invalid['customers'] === []);
 
+assert_true('één klant blijft enkelvoud', customer_revenue_customer_count_label(1) === '1 klant');
+assert_true('meer klanten blijft meervoud', customer_revenue_customer_count_label(20) === '20 klanten');
 assert_true('weergave KVT-controlebedrag', customer_revenue_format_cents(933076) === '€ 9.330,76');
 assert_true('weergave Hunter-totaal', customer_revenue_format_cents(92886088) === '€ 928.860,88');
 assert_true('weergave creditbedrag', customer_revenue_format_cents(-110) === '€ -1,10');

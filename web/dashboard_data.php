@@ -1362,7 +1362,7 @@ if ($section === 'table_customer_revenue') {
             <?php if ($revenueCustomers !== []): ?>
                 <tfoot>
                     <tr>
-                        <td colspan="2"><?= html(fmt_number((float) ($revenueTotals['customers'] ?? 0), 0)) ?> klanten</td>
+                        <td colspan="2"><?= html(customer_revenue_customer_count_label((int) ($revenueTotals['customers'] ?? 0))) ?></td>
                         <td class="right"><?= html(customer_revenue_format_cents((int) ($revenueTotals['month_cents'] ?? 0))) ?></td>
                         <td class="right"><?= html(customer_revenue_format_cents((int) ($revenueTotals['year_cents'] ?? 0))) ?></td>
                     </tr>

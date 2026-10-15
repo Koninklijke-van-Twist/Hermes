@@ -75,6 +75,15 @@ function customer_revenue_cents($value): ?int
     return null;
 }
 
+function customer_revenue_customer_count_label(int $count): string
+{
+    if ($count === 1) {
+        return '1 klant';
+    }
+
+    return number_format(max(0, $count), 0, ',', '.') . ' klanten';
+}
+
 function customer_revenue_format_cents(int $cents): string
 {
     $sign = $cents < 0 ? '-' : '';
