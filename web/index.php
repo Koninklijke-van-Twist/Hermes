@@ -93,6 +93,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         }
 
         select,
+        input,
         button {
             width: 100%;
             box-sizing: border-box;
@@ -194,6 +195,22 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
         .week-sales-filters select {
             width: 220px;
             max-width: 100%;
+        }
+
+        .customer-revenue-searchline {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .customer-revenue-searchline input {
+            width: 260px;
+            max-width: 100%;
+        }
+
+        .customer-revenue-searchline button {
+            width: auto;
+            white-space: nowrap;
         }
 
         .week-sales-range {
@@ -580,7 +597,7 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
 
         <div class="header">
             <h1>Omzet Dashboard</h1>
-            <p class="sub">Omzet, order intake, levertijd, verkopen per week, top 10 klanten/producten en inbound
+            <p class="sub">Omzet, order intake, levertijd, verkopen per week, omzet per klant, top 10 klanten/producten en inbound
                 (week/maand/jaar).
             </p>
         </div>
@@ -642,6 +659,15 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 title="Omzet per productgroep: Hier zie je de omzet uitgesplitst per productgroep. Dit helpt om te zien welke groepen het meeste bijdragen aan de totale omzet.">
                 <div class="table-title">
                     Omzet per productgroep</div>
+                <div class="loading-box large">
+                    <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
+                </div>
+            </div>
+
+            <div class="table-wrap" id="sec-customer-revenue"
+                title="Omzet per klant: geboekte omzet exclusief btw, inclusief creditnota's, per klant voor de gekozen maand en het gekozen jaar. Zoeken op klantnaam of klantnummer. Bedrijf en afdeling volgen de filters bovenaan.">
+                <div class="table-title">
+                    Omzet per klant</div>
                 <div class="loading-box large">
                     <?= '<div class="loading-center"><div class="spinner"></div><div class="loading-label">Laden...</div></div>' ?>
                 </div>
@@ -766,12 +792,19 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 year: '',
                 week: ''
             };
+            const customerRevenueParams = new URLSearchParams(window.location.search);
+            const customerRevenueState = {
+                year: customerRevenueParams.get('customer_revenue_year') || '',
+                month: customerRevenueParams.get('customer_revenue_month') || '',
+                q: customerRevenueParams.get('customer_revenue_q') || ''
+            };
 
             const sectionConfigs = [
                 { id: 'sec-card-omzet', section: 'card_omzet_parts', large: false },
                 { id: 'sec-card-order-intake', section: 'card_order_intake', large: false },
                 { id: 'sec-card-lead-time', section: 'card_lead_time', large: false },
                 { id: 'sec-table-omzet-productgroep', section: 'table_omzet_productgroep', large: true },
+                { id: 'sec-customer-revenue', section: 'table_customer_revenue', large: true },
                 { id: 'sec-week-sales', section: 'table_week_sales', large: true },
                 { id: 'sec-top-customers-week', section: 'table_top_customers', period: 'week', large: true },
                 { id: 'sec-top-customers-maand', section: 'table_top_customers', period: 'maand', large: true },
@@ -924,7 +957,42 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 {
                     params.set('dev_top', devTop);
                 }
+                if (customerRevenueState.year)
+                {
+                    params.set('customer_revenue_year', customerRevenueState.year);
+                }
+                if (customerRevenueState.month)
+                {
+                    params.set('customer_revenue_month', customerRevenueState.month);
+                }
+                if (customerRevenueState.q)
+                {
+                    params.set('customer_revenue_q', customerRevenueState.q);
+                }
                 return params;
+            }
+
+            function readCustomerRevenueState (container)
+            {
+                if (!(container instanceof HTMLElement))
+                {
+                    return;
+                }
+                const yearEl = container.querySelector('[data-customer-revenue="year"]');
+                const monthEl = container.querySelector('[data-customer-revenue="month"]');
+                const queryEl = container.querySelector('[data-customer-revenue="q"]');
+                if (yearEl instanceof HTMLSelectElement)
+                {
+                    customerRevenueState.year = yearEl.value || '';
+                }
+                if (monthEl instanceof HTMLSelectElement)
+                {
+                    customerRevenueState.month = monthEl.value || '';
+                }
+                if (queryEl instanceof HTMLInputElement)
+                {
+                    customerRevenueState.q = queryEl.value || '';
+                }
             }
 
             function syncPeriodStateByLevel (sectionName, level, value)
@@ -1045,6 +1113,10 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                             weekSalesState.week = weekEl.value;
                         }
                     }
+                    if (config.section === 'table_customer_revenue')
+                    {
+                        readCustomerRevenueState(target);
+                    }
                     highlightLoadedCard(target);
                 } catch (error)
                 {
@@ -1138,6 +1210,18 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                     return;
                 }
 
+                if (target.classList.contains('customer-revenue-select'))
+                {
+                    const container = target.closest('#sec-customer-revenue');
+                    readCustomerRevenueState(container);
+                    const config = sectionConfigById['sec-customer-revenue'] || null;
+                    if (config)
+                    {
+                        loadSection(config);
+                    }
+                    return;
+                }
+
                 if (target.classList.contains('week-sales-select'))
                 {
                     const container = target.closest('#sec-week-sales');
@@ -1185,11 +1269,47 @@ $vendorFilter = trim((string) ($_GET['vendor_filter'] ?? ''));
                 loadSection(config);
             });
 
+            contentEl.addEventListener('keydown', function (event)
+            {
+                if (event.key !== 'Enter')
+                {
+                    return;
+                }
+                const target = event.target;
+                if (!(target instanceof HTMLInputElement) || !target.classList.contains('customer-revenue-query'))
+                {
+                    return;
+                }
+                const container = target.closest('#sec-customer-revenue');
+                readCustomerRevenueState(container);
+                const config = sectionConfigById['sec-customer-revenue'] || null;
+                if (!config)
+                {
+                    return;
+                }
+                event.preventDefault();
+                loadSection(config);
+            });
+
             contentEl.addEventListener('click', function (event)
             {
                 const element = event.target;
                 if (!(element instanceof HTMLElement))
                 {
+                    return;
+                }
+
+                const searchButton = element.closest('.customer-revenue-search');
+                if (searchButton instanceof HTMLButtonElement)
+                {
+                    const container = searchButton.closest('#sec-customer-revenue');
+                    readCustomerRevenueState(container);
+                    const config = sectionConfigById['sec-customer-revenue'] || null;
+                    if (config)
+                    {
+                        event.preventDefault();
+                        loadSection(config);
+                    }
                     return;
                 }
 
