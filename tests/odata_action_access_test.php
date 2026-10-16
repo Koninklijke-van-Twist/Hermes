@@ -46,6 +46,26 @@ if ($requireAt === false || $statusAt === false || $deleteAt === false || $clear
 if ($requireAt > $statusAt || $requireAt > $deleteAt || $requireAt > $clearAt) {
     fail('logincheck moet vóór cache_status, cache_delete en cache_clear');
 }
+$gateStart = strpos($odataSource, 'function odata_require_direct_action_access');
+$gateEnd = strpos($odataSource, 'function odata_release_session_lock');
+if ($gateStart === false || $gateEnd === false || $gateEnd < $gateStart) {
+    fail('login-gate of sessie-vrijgave ontbreekt');
+}
+$gate = substr($odataSource, $gateStart, $gateEnd - $gateStart);
+$emailAt = strpos($gate, 'odata_email_is_allowed');
+$releaseAt = strpos($gate, 'odata_release_session_lock()');
+if ($emailAt === false || $releaseAt === false || $releaseAt < $emailAt) {
+    fail('sessielock moet vrij na de logincheck, vóór het lezen van de cache');
+}
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_start();
+}
+$_SESSION['hermes_access_probe'] = 1;
+odata_release_session_lock();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    fail('actieve sessie blijft gelockt');
+}
+
 assert_contains($odataSource, 'php_sapi_name()', 'cli-check');
 assert_contains($odataSource, "=== 'cli'", 'cli-vergelijking');
 assert_not_contains($odataSource, 'is_trusted_requester', 'geen localhost-bypass');

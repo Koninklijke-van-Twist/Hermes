@@ -2708,6 +2708,17 @@ function odata_require_direct_action_access(): void
         }
         odata_deny_action_access();
     }
+
+    // cache_status polt elke 2s en leest alle cachebestanden. Zelfde als
+    // dashboard_data.php: het sessiebestand niet vasthouden tijdens dat werk.
+    odata_release_session_lock();
+}
+
+function odata_release_session_lock(): void
+{
+    if (function_exists('session_status') && function_exists('session_write_close') && session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
 }
 
 /**
