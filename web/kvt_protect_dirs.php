@@ -4,7 +4,9 @@
  * Zet de afscherming van server-only mappen (cache/, data/, uploads/) neer als
  * die ontbreekt. De FTP-deploy sluit deze mappen uit (geen --delete-risico),
  * dus de app schrijft .htaccess / index.html / index.php zelf. Idempotent:
- * bestaande bestanden worden niet aangeraakt.
+ * bestaande bestanden worden niet aangeraakt. Opnieuw aanroepen mag: een map
+ * die bij de eerste aanroep nog niet bestond (cache/ na mkdir) wordt dan alsnog
+ * afgeschermd.
  */
 if (!function_exists('kvt_ensure_protected_dirs')) {
     function kvt_ensure_protected_dirs(?string $webRoot = null): void
