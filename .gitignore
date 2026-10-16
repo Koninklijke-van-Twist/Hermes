@@ -1,7 +1,15 @@
 
 BC Structure Metadata.txt
 
-web/cache/
+web/cache/*
+!web/cache/.htaccess
+!web/cache/index.html
+!web/cache/index.php
+!web/cache/odata/
+web/cache/odata/*
+!web/cache/odata/.htaccess
+!web/cache/odata/index.html
+!web/cache/odata/index.php
 
 web/auth.php
 

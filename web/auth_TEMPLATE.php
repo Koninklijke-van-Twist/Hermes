@@ -32,6 +32,11 @@ $allowedUsers = [
     "user@domain.nl"
 ];
 
+// Optioneel, alleen als een HTTP-runner odata.php?action=… moet aanroepen.
+// Header X-Hermes-Secret moet exact dit geheim zijn. Weglaten: geen anonieme toegang.
+// CLI (php web/nightly.php) heeft dit niet nodig.
+// $hermesRunnerSecret = '';
+
 // Lokaal testen. Max rijen per OData-bron; elke card die die bron laadt stopt
 // daar. Productie: deze regel weglaten. Zelfde effect als HERMES_DEV_TOP,
 // ?dev_top=50 op het dashboard of php web/nightly.php --dev-top=50.
