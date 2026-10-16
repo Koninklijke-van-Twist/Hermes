@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
@@ -2229,6 +2230,8 @@ function cache_base_dir(): string
     $dir = __DIR__ . "/cache/odata";
     if (!is_dir($dir)) {
         @mkdir($dir, 0777, true);
+        // Include-time zag cache/ nog niet; afschermen vóór de eerste JSON-write.
+        kvt_ensure_protected_dirs(__DIR__);
     }
     return $dir;
 }

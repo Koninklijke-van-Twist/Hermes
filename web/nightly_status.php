@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 
 /**
  * Voortgang van nightly.php. Het statusbestand wordt tijdens de run bijgewerkt.

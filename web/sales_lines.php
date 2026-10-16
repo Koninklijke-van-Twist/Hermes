@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 
 /**
  * Verkoopregels (SalesLines) die het omzetdashboard als verkocht artikel telt.

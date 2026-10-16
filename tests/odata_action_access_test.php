@@ -227,27 +227,8 @@ foreach ([
     assert_not_contains($indexBody, 'Customer', $indexFile);
 }
 
-$workflow = (string) file_get_contents($root . '/.github/workflows/deploy-ftp.yml');
-$includeAt = strpos($workflow, '--include-glob cache/.htaccess');
-$excludeCacheAt = strpos($workflow, '--exclude-glob cache/**');
-$excludeOdataAt = strpos($workflow, '--exclude-glob cache/odata/**');
-if ($includeAt === false || $excludeCacheAt === false || $excludeOdataAt === false) {
-    fail('ftp-deploy mist cache-patronen');
-}
-if ($includeAt < $excludeCacheAt || $includeAt < $excludeOdataAt) {
-    fail('cache/.htaccess moet ná de cache-excludes staan, anders uploadt lftp hem niet');
-}
-foreach ([
-    '--include-glob cache/index.html',
-    '--include-glob cache/index.php',
-    '--include-glob cache/odata/.htaccess',
-    '--include-glob cache/odata/index.html',
-    '--include-glob cache/odata/index.php',
-    '--exclude-glob auth.php',
-    '--exclude-glob .htaccess',
-] as $needle) {
-    assert_contains($workflow, $needle, 'ftp-deploy');
-}
+// De FTP-deploy sluit cache/ uit (geen --delete-risico); de app zet de afscherming zelf neer.
+// FTP-deploy en afscherming: zie tests/protect_dirs_test.php.
 
 $phpCgi = trim((string) shell_exec('command -v php-cgi 2>/dev/null'));
 if ($phpCgi !== '') {
