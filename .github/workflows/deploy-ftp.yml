@@ -36,7 +36,9 @@ jobs:
       - name: Deploy-guard (beschermde server-paden)
         run: bash .github/deploy-guard.sh .github/workflows/deploy-ftp.yml
 
-      # Stap 1: alles op de server opruimen behalve .htaccess, .htpasswd, *.json, auth.php
+      # Cache-JSON, locks en de root-.htaccess blijven op de server.
+      # lftp: het laatste passende patroon wint. Includes staan daarom
+      # ná de excludes, anders uploadt cache/.htaccess niet.
       - name: Deploy web/ to FTP (with delete & excludes)
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
@@ -56,9 +58,19 @@ jobs:
           mirror -R --delete \
             --exclude-glob .htaccess \
             --exclude-glob cache/** \
+            --exclude-glob cache/odata/** \
+            --exclude-glob cache/odata/*/ \
             --exclude-glob analytics/*.sqlite \
             --exclude-glob analytics/*.sqlite-* \
             --exclude-glob auth.php \
+            --include-glob cache/ \
+            --include-glob cache/odata/ \
+            --include-glob cache/.htaccess \
+            --include-glob cache/index.html \
+            --include-glob cache/index.php \
+            --include-glob cache/odata/.htaccess \
+            --include-glob cache/odata/index.html \
+            --include-glob cache/odata/index.php \
             ./web .
 
           set cmd:fail-exit false
