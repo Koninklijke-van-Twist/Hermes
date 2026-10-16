@@ -227,26 +227,30 @@ foreach ([
     assert_not_contains($indexBody, 'Customer', $indexFile);
 }
 
+// De FTP-deploy sluit cache/ uit (geen --delete-risico); de app zet de afscherming zelf neer.
 $workflow = (string) file_get_contents($root . '/.github/workflows/deploy-ftp.yml');
-$includeAt = strpos($workflow, '--include-glob cache/.htaccess');
-$excludeCacheAt = strpos($workflow, '--exclude-glob cache/**');
-$excludeOdataAt = strpos($workflow, '--exclude-glob cache/odata/**');
-if ($includeAt === false || $excludeCacheAt === false || $excludeOdataAt === false) {
-    fail('ftp-deploy mist cache-patronen');
+assert_contains($workflow, '--exclude-glob cache/**', 'ftp-deploy');
+if (strpos($workflow, '--include-glob') !== false) {
+    fail('ftp-deploy mag geen includes hebben (--delete wiste server-only mappen)');
 }
-if ($includeAt < $excludeCacheAt || $includeAt < $excludeOdataAt) {
-    fail('cache/.htaccess moet ná de cache-excludes staan, anders uploadt lftp hem niet');
-}
-foreach ([
-    '--include-glob cache/index.html',
-    '--include-glob cache/index.php',
-    '--include-glob cache/odata/.htaccess',
-    '--include-glob cache/odata/index.html',
-    '--include-glob cache/odata/index.php',
-    '--exclude-glob auth.php',
-    '--exclude-glob .htaccess',
-] as $needle) {
-    assert_contains($workflow, $needle, 'ftp-deploy');
+$tmpWeb = sys_get_temp_dir() . '/hermes-protect-' . bin2hex(random_bytes(4));
+mkdir($tmpWeb . '/cache/odata', 0777, true);
+mkdir($tmpWeb . '/cache/usersettings', 0777, true);
+require_once $root . '/web/kvt_protect_dirs.php';
+$fresh = (static function () use ($root, $tmpWeb): void {
+    // Losse run zonder de static guard: helper opnieuw evalueren via een subproces.
+    $cmd = 'php -r ' . escapeshellarg('$f = file_get_contents(' . var_export($root . '/web/kvt_protect_dirs.php', true) . '); $f = str_replace("kvt_ensure_protected_dirs();", "kvt_ensure_protected_dirs(" . var_export(' . var_export($tmpWeb, true) . ', true) . ");", $f); eval("?>" . $f);');
+    shell_exec($cmd);
+})();
+foreach (['cache', 'cache/odata', 'cache/usersettings'] as $dir) {
+    $ht = $tmpWeb . '/' . $dir . '/.htaccess';
+    if (!is_file($ht)) {
+        fail('helper schreef geen .htaccess in ' . $dir);
+    }
+    assert_contains((string) file_get_contents($ht), 'Require all denied', $ht);
+    if (!is_file($tmpWeb . '/' . $dir . '/index.html') || !is_file($tmpWeb . '/' . $dir . '/index.php')) {
+        fail('helper schreef geen indexbestanden in ' . $dir);
+    }
 }
 
 $phpCgi = trim((string) shell_exec('command -v php-cgi 2>/dev/null'));
